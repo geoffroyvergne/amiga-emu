@@ -216,16 +216,32 @@ void test_program_sequence() {
     EXPECT(f.cpu.pc() == kProgramBase);
 }
 
-void test_odd_pc_fetch_throws() {
+// Fetching from an odd PC: address error, group 0 frame (14 bytes).
+void test_odd_pc_fetch_is_address_error() {
     Fixture f{0x4ED0};  // JMP (A0) to an odd address
+    f.bus->write32(3 * 4, 0x4800);  // address error vector
     f.cpu.set_a(0, 0x2001);
     f.cpu.step();
+    EXPECT(f.cpu.step() == 50);
+    EXPECT(f.cpu.pc() == 0x4800);
+    EXPECT(f.cpu.a(7) == 0x8000 - 14);
+    EXPECT(f.bus->read16(0x8000 - 14) == 0x16);      // read, instruction, supervisor program (FC 6)
+    EXPECT(f.bus->read32(0x8000 - 12) == 0x2001);    // access address
+    EXPECT(f.bus->read32(0x8000 - 4) == 0x2001);     // stacked PC
+    EXPECT(f.cpu.exception_count(Cpu68000::kVectorAddressError) == 1);
+}
+
+// An address error while stacking an address error frame halts the 68000.
+void test_double_bus_fault() {
+    Fixture f{0x4ED0};
+    f.cpu.set_a(0, 0x2001);
+    f.cpu.step();
+    f.cpu.set_a(7, 0x8001);  // odd supervisor stack: the frame can't be written
     try {
         f.cpu.step();
         EXPECT(false);
     } catch (const CpuError& e) {
-        EXPECT(e.kind() == CpuError::Kind::OddPcFetch);
-        EXPECT(e.pc() == 0x2001);
+        EXPECT(e.kind() == CpuError::Kind::DoubleBusFault);
     }
 }
 
@@ -294,7 +310,8 @@ void run_cpu68000_tests() {
     test_jmp_indexed();
     test_jmp_illegal_modes_trap();
     test_program_sequence();
-    test_odd_pc_fetch_throws();
+    test_odd_pc_fetch_is_address_error();
+    test_double_bus_fault();
     test_illegal_instruction_frame();
     test_reset_reads_vectors_through_overlay();
     test_sr_swaps_stack_pointers();

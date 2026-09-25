@@ -72,14 +72,10 @@ constexpr bool always(uint16_t) noexcept { return true; }
 CpuError::CpuError(Kind kind, uint32_t pc, uint16_t opcode, uint32_t address) noexcept
     : kind_(kind), pc_(pc), opcode_(opcode), address_(address) {
     switch (kind) {
-        case Kind::OddPcFetch:
+        case Kind::DoubleBusFault:
             std::snprintf(message_.data(), message_.size(),
-                          "address error: fetch from odd PC $%08X", pc);
-            break;
-        case Kind::OddDataAccess:
-            std::snprintf(message_.data(), message_.size(),
-                          "address error: odd access at $%08X by opcode $%04X at $%08X", address,
-                          opcode, pc);
+                          "double bus fault: address error at $%08X while stacking one (opcode $%04X at $%08X)",
+                          address, opcode, pc);
             break;
         case Kind::UnimplementedOpcode:
             std::snprintf(message_.data(), message_.size(), "unimplemented opcode $%04X at $%08X",
@@ -277,6 +273,64 @@ void Cpu68000::set_sr(uint16_t value) noexcept {
 }
 
 uint32_t Cpu68000::step() {
+    try {
+        return execute();
+    } catch (const AddressFault& fault) {
+        return address_error(fault);
+    }
+}
+
+// Group 0 exception: stack PC, SR, the instruction word, the access address
+// and a status word (R/W, I/N, function code), then jump through vector 3.
+uint32_t Cpu68000::address_error(const AddressFault& fault) {
+    if (in_address_error_) {  // faulted while stacking the frame (odd SSP): the 68000 halts
+        in_address_error_ = false;
+        throw CpuError(CpuError::Kind::DoubleBusFault, instruction_pc_, opcode_, fault.address);
+    }
+    const bool log = exception_counts_[kVectorAddressError] < kMaxAddressErrorLogs;
+    ++exception_counts_[kVectorAddressError];
+    in_address_error_ = true;
+    try {
+        const bool was_supervisor = supervisor();
+        const uint16_t old_sr = sr_;
+        set_sr(static_cast<uint16_t>((sr_ | kFlagS) & ~kFlagT));
+        // Function code: 1/2 user data/program, 5/6 supervisor data/program.
+        const unsigned function_code = (was_supervisor ? 4u : 0u) + (fault.instruction ? 2u : 1u);
+        const auto status = static_cast<uint16_t>((fault.read ? 0x10u : 0u) | (fault.instruction ? 0u : 0x08u) |
+                                                  function_code);
+        push32(fault.instruction ? fault.address : instruction_pc_ + 2);
+        push16(old_sr);
+        push16(opcode_);
+        push32(fault.address);
+        push16(status);
+        pc_ = read_memory(kVectorAddressError * 4u, Size::Long);
+    } catch (const AddressFault& second) {
+        in_address_error_ = false;
+        stopped_ = true;
+        throw CpuError(CpuError::Kind::DoubleBusFault, instruction_pc_, opcode_, second.address);
+    }
+    in_address_error_ = false;
+    // Not necessarily a crash: some programs trigger address errors on
+    // purpose (e.g. Psygnosis protection code branches to an odd address and
+    // does its work in the vector 3 handler), so say where execution goes.
+    if (log) {
+        if (fault.instruction) {
+            std::fprintf(stderr, "[cpu] address error: jump to odd address $%08X; vector 3 handler at $%08X\n",
+                         fault.address, pc_);
+        } else {
+            std::fprintf(stderr,
+                         "[cpu] address error: word/long %s at odd address $%08X by opcode $%04X at $%08X; "
+                         "vector 3 handler at $%08X\n",
+                         fault.read ? "read" : "write", fault.address, opcode_, instruction_pc_, pc_);
+        }
+        if (exception_counts_[kVectorAddressError] == kMaxAddressErrorLogs) {
+            std::fprintf(stderr, "[cpu] (further address errors not logged; see the state dump counters)\n");
+        }
+    }
+    return 50;
+}
+
+uint32_t Cpu68000::execute() {
     if (nmi_pending_) {
         nmi_pending_ = false;
         stopped_ = false;
@@ -398,9 +452,7 @@ uint32_t Cpu68000::immediate(Size size) {
 // --- Memory ---------------------------------------------------------------------
 
 uint32_t Cpu68000::read_memory(uint32_t address, Size size) {
-    if (size != Size::Byte && (address & 1u) != 0) {
-        throw CpuError(CpuError::Kind::OddDataAccess, instruction_pc_, opcode_, address);
-    }
+    if (size != Size::Byte && (address & 1u) != 0) throw AddressFault{address, true, false};
     switch (size) {
         case Size::Byte: return bus_.read8(address);
         case Size::Word: return bus_.read16(address);
@@ -410,9 +462,7 @@ uint32_t Cpu68000::read_memory(uint32_t address, Size size) {
 }
 
 void Cpu68000::write_memory(uint32_t address, Size size, uint32_t value) {
-    if (size != Size::Byte && (address & 1u) != 0) {
-        throw CpuError(CpuError::Kind::OddDataAccess, instruction_pc_, opcode_, address);
-    }
+    if (size != Size::Byte && (address & 1u) != 0) throw AddressFault{address, false, false};
     switch (size) {
         case Size::Byte: bus_.write8(address, static_cast<uint8_t>(value)); break;
         case Size::Word: bus_.write16(address, static_cast<uint16_t>(value)); break;
@@ -421,9 +471,7 @@ void Cpu68000::write_memory(uint32_t address, Size size, uint32_t value) {
 }
 
 uint16_t Cpu68000::fetch16() {
-    if ((pc_ & 1u) != 0) {
-        throw CpuError(CpuError::Kind::OddPcFetch, pc_, 0);
-    }
+    if ((pc_ & 1u) != 0) throw AddressFault{pc_, true, true};
     const uint16_t word = bus_.read16(pc_);
     pc_ += 2;
     return word;
@@ -459,14 +507,25 @@ uint32_t Cpu68000::pop32() {
 // --- Illegal and unassigned opcodes ------------------------------------------------
 
 uint32_t Cpu68000::op_illegal(uint16_t opcode) {
-    if (exception_counts_[kVectorIllegal] < 8) {
+    if (exception_counts_[kVectorIllegal] < 16) {
         std::fprintf(stderr, "[cpu] illegal instruction $%04X at $%08X\n", opcode, instruction_pc_);
     }
     return exception(kVectorIllegal, instruction_pc_, 34);
 }
 
-uint32_t Cpu68000::op_line_a(uint16_t) { return exception(kVectorLineA, instruction_pc_, 34); }
-uint32_t Cpu68000::op_line_f(uint16_t) { return exception(kVectorLineF, instruction_pc_, 34); }
+uint32_t Cpu68000::op_line_a(uint16_t opcode) {
+    if (exception_counts_[kVectorLineA] < 8) {
+        std::fprintf(stderr, "[cpu] line A opcode $%04X at $%08X\n", opcode, instruction_pc_);
+    }
+    return exception(kVectorLineA, instruction_pc_, 34);
+}
+
+uint32_t Cpu68000::op_line_f(uint16_t opcode) {
+    if (exception_counts_[kVectorLineF] < 8) {
+        std::fprintf(stderr, "[cpu] line F opcode $%04X at $%08X\n", opcode, instruction_pc_);
+    }
+    return exception(kVectorLineF, instruction_pc_, 34);
+}
 
 // --- Data movement ------------------------------------------------------------------
 

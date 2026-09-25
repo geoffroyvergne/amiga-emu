@@ -14,8 +14,12 @@ namespace amiga {
 // shift register and the interrupt control register.
 //
 // Timers count E clock ticks (tick()), the TOD counts pulses on its TOD pin
-// (tod_pulse()). Not emulated: the PB6/PB7 timer outputs (PBON), counting
-// CNT pulses, and shifting data out of the serial port.
+// (tod_pulse()). In serial output mode (CRA SPMODE) a byte written to SDR is
+// shifted out at half the timer A underflow rate (continuous mode): after 8
+// bits (16 underflows) ICR SP is set, and a byte written meanwhile follows.
+// Nothing is connected to SP in output mode (the keyboard only sees the
+// handshake level), so the bits go nowhere. Not emulated: the PB6/PB7 timer
+// outputs (PBON) and counting CNT pulses.
 class Cia8520 {
 public:
     enum Register : uint8_t {
@@ -41,6 +45,7 @@ public:
     static constexpr uint8_t kCraSpMode = 1u << 6;  // 1 = serial port output
     static constexpr uint8_t kCrbInModeShift = 5;   // 00 E clock, 01 CNT, 10/11 timer A underflow
     static constexpr uint8_t kCrbAlarm = 1u << 7;   // 1 = TOD writes set the alarm
+    static constexpr uint8_t kShiftOutUnderflows = 16;  // 8 bits, two timer A underflows each
 
     Cia8520() noexcept { reset(); }
 
@@ -99,6 +104,8 @@ private:
     uint8_t cra_ = 0, crb_ = 0;
     uint8_t icr_data_ = 0, icr_mask_ = 0;
     uint8_t sdr_ = 0;
+    uint8_t shift_out_ = 0;       // timer A underflows left in the byte being sent (0 = idle)
+    bool sdr_pending_ = false;    // SDR written while a byte was being sent
     uint32_t tod_ = 0, tod_latch_ = 0, alarm_ = 0;
     bool tod_latched_ = false;  // TOD HI was read: reads come from tod_latch_ until TOD LO
     bool tod_halted_ = false;   // TOD HI was written: counting stops until TOD LO
@@ -136,6 +143,7 @@ public:
     }
 
     [[nodiscard]] FloppyDrive& df0() noexcept { return df0_; }
+    [[nodiscard]] const FloppyDrive& df0() const noexcept { return df0_; }
     [[nodiscard]] Cia8520& a() noexcept { return a_; }
     [[nodiscard]] Cia8520& b() noexcept { return b_; }
 

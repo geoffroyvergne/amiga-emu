@@ -43,3 +43,7 @@ void run_cia_tests();
 void run_cpu_isa_tests();
 void run_kickstart_boot_test();
 void run_floppy_tests();
+void run_audio_tests();
+void run_keyboard_joystick_tests();
+void run_gamepad_mapping_tests();
+void run_diagnostics_tests();

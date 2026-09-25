@@ -164,6 +164,26 @@ void test_serial_input() {
     EXPECT(cia.read(Cia8520::kSdr) == 0x55);
 }
 
+// Output mode: SDR shifts out at half the timer A underflow rate; SP is set
+// after 8 bits (keyboard handshakes wait for it).
+void test_serial_output() {
+    Cia8520 cia;
+    cia.write(Cia8520::kTaLo, 2);  // underflow every 3 ticks
+    cia.write(Cia8520::kTaHi, 0);
+    cia.write(Cia8520::kCra, Cia8520::kCraSpMode | Cia8520::kCrStart);
+    cia.write(Cia8520::kSdr, 0x00);
+    cia.write(Cia8520::kSdr, 0xFF);  // queued behind the first byte
+    (void)cia.read(Cia8520::kIcr);
+    for (int i = 0; i < 16 * 3 - 1; ++i) cia.tick();
+    EXPECT((cia.read(Cia8520::kIcr) & Cia8520::kIcrSp) == 0);
+    cia.tick();
+    EXPECT((cia.read(Cia8520::kIcr) & Cia8520::kIcrSp) != 0);
+    for (int i = 0; i < 16 * 3; ++i) cia.tick();  // the queued byte
+    EXPECT((cia.read(Cia8520::kIcr) & Cia8520::kIcrSp) != 0);
+    for (int i = 0; i < 16 * 3; ++i) cia.tick();  // then idle
+    EXPECT((cia.read(Cia8520::kIcr) & Cia8520::kIcrSp) == 0);
+}
+
 // --- Keyboard --------------------------------------------------------------------
 
 uint8_t decode(uint8_t sdr) {  // what keyboard.device does: NOT, then ROR #1
@@ -374,6 +394,7 @@ void run_cia_tests() {
     test_timer_b_counts_timer_a_underflows();
     test_time_of_day();
     test_serial_input();
+    test_serial_output();
     test_keyboard_encoding();
     test_keyboard_handshake();
     test_keyboard_caps_lock_toggles();

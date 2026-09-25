@@ -1,0 +1,41 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/tests_emu.dir/tests/test_audio.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_audio.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_cia.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_cia.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_copper.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_copper.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_cpu68000.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_cpu68000.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_cpu_instructions.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_cpu_instructions.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_cpu_isa.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_cpu_isa.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_diagnostics.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_diagnostics.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_display.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_display.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_floppy.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_floppy.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_gamepad_mapping.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_gamepad_mapping.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_keyboard_joystick.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_keyboard_joystick.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_kickstart_boot.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_kickstart_boot.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_machine.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_machine.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_main.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_main.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_memory_bus.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_memory_bus.cpp.o.d"
+  "CMakeFiles/tests_emu.dir/tests/test_timing.cpp.o"
+  "CMakeFiles/tests_emu.dir/tests/test_timing.cpp.o.d"
+  "tests_emu"
+  "tests_emu.pdb"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/tests_emu.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

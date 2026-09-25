@@ -72,6 +72,7 @@ inline constexpr uint16_t kDmaEn = 1u << 9;  // master enable
 inline constexpr uint16_t kBplEn = 1u << 8;
 inline constexpr uint16_t kCopEn = 1u << 7;
 inline constexpr uint16_t kBltEn = 1u << 6;
+inline constexpr uint16_t kSprEn = 1u << 5;
 inline constexpr uint16_t kDskEn = 1u << 4;
 
 // INTENA / INTREQ bits, with their 68000 interrupt level.

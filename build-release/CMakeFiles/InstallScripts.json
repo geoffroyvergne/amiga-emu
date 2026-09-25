@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/gv/dev/projects/amiga-emu/build-release/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -267,6 +267,65 @@ void test_copper_drives_display() {
     EXPECT(pixel(255, 639) == 0xFFFF'0000);
 }
 
+// The Copper moves sprite 0 in the middle of a line: it shows twice there.
+void test_copper_multiplexes_a_sprite() {
+    auto m = std::make_unique<Machine>();
+    MemoryBus& bus = m->bus();
+    constexpr uint16_t kLine = 0x50;
+    poke(bus, 0x3000, {
+        static_cast<uint16_t>(kLine << 8 | 0x11), 0xFFFE,  // WAIT line, h=$10
+        0x140, static_cast<uint16_t>(kLine << 8 | 0x40),    // SPR0POS: HSTART $80
+        0x142, static_cast<uint16_t>((kLine + 1) << 8),     // SPR0CTL
+        0x146, 0x0000,                                      // SPR0DATB
+        0x144, 0x8000,                                      // SPR0DATA: arms
+        static_cast<uint16_t>(kLine << 8 | 0x71), 0xFFFE,   // WAIT line, h=$70
+        0x140, static_cast<uint16_t>(kLine << 8 | 0x90),    // SPR0POS: HSTART $120
+        static_cast<uint16_t>((kLine + 1) << 8 | 0x11), 0xFFFE,
+        0x142, 0x0000,                                      // disarm on the next line
+        0xFFFF, 0xFFFE,
+    });
+    bus.write16(custom(reg::kColor00 + 2 * 17), 0x0F00);
+    bus.write16(custom(reg::kDiwStrt), 0x2C81);
+    bus.write16(custom(reg::kDiwStop), 0x2CC1);
+    bus.write16(custom(reg::kBplCon0), 0x0200);
+    bus.write16(custom(reg::kCop1Lch), 0x0000);
+    bus.write16(custom(reg::kCop1Lcl), 0x3000);
+    bus.write16(custom(reg::kDmaCon), reg::kSetClr | reg::kDmaEn | reg::kCopEn);
+    m->run_frame();
+    m->run_frame();
+
+    const auto& frame = m->chipset().frame();
+    const size_t row = (kLine - Chipset::kFirstDisplayLine) * 640;
+    const uint32_t red = amiga::Denise::rgb12_to_argb(0x0F00);
+    EXPECT(frame[row + 0] == red);          // HSTART $80: lowres 0
+    EXPECT(frame[row + 2 * 160] == red);    // HSTART $120: lowres 160
+    EXPECT(frame[row + 2 * 80] != red);
+    EXPECT(frame[row + 640] != red);        // disarmed on the next line
+}
+
+// Flashback: code polls INTREQR for VERTB while the (OS) level 3 handler is
+// enabled and clears it. With the 68000's interrupt latency the poll reads the
+// bit before the interrupt is taken; without it the loop never ends.
+void test_polling_intreqr_with_the_handler_enabled() {
+    auto m = std::make_unique<Machine>();
+    MemoryBus& bus = m->bus();
+    poke(bus, 0x0000, {0x0008, 0x0000, 0x0000, 0x1000});  // SSP $80000, PC $1000
+    poke(bus, 0x006C, {0x0000, 0x2000});                  // level 3 autovector
+    poke(bus, 0x2000, {0x33FC, 0x0020, 0x00DF, 0xF09C,    // handler: MOVE.W #$0020,INTREQ
+                       0x4E73});                          //          RTE
+    poke(bus, 0x1000, {0x46FC, 0x2000,                    // MOVE #$2000,SR (mask 0)
+                       0x3039, 0x00DF, 0xF01E,            // loop: MOVE.W INTREQR,D0
+                       0x0240, 0x0020,                    //       ANDI.W #$0020,D0
+                       0x6700, 0xFFF4,                    //       BEQ.W loop
+                       0x7E01,                            // MOVEQ #1,D7
+                       0x60FE});                          // BRA.S *
+    bus.write16(custom(reg::kIntEna), reg::kSetClr | reg::kIntEn | reg::kIntVertb);
+    m->reset();
+    for (int f = 0; f < 10 && m->cpu().d(7) != 1; ++f) m->run_frame();
+    EXPECT(m->cpu().d(7) == 1);                     // the wait ended
+    EXPECT(m->cpu().exception_count(27) >= 1);      // and the handler still ran
+}
+
 // Full path: VERTB (Paula) -> level 3 autovector (CPU) -> handler with RTE,
 // with the Copper acknowledging the request by writing INTREQ.
 void test_vertical_blank_interrupt_end_to_end() {
@@ -305,6 +364,33 @@ void test_vertical_blank_interrupt_end_to_end() {
 
 }  // namespace
 
+// COPJMP1/2 are strobes: reading them (MOVE.W $DFF088,Dn) restarts the
+// Copper as a write does.
+void test_copjmp_read_strobes() {
+    auto m = std::make_unique<Machine>();
+    MemoryBus& bus = m->bus();
+    bus.write16(custom(reg::kCop1Lch), 0x0001);
+    bus.write16(custom(reg::kCop1Lcl), 0x2340);
+    bus.write16(custom(reg::kCop2Lch), 0x0002);
+    bus.write16(custom(reg::kCop2Lcl), 0x0000);
+    (void)bus.read16(custom(reg::kCopJmp1));
+    EXPECT(m->chipset().copper().pc() == 0x1'2340);
+    (void)bus.read16(custom(reg::kCopJmp2));
+    EXPECT(m->chipset().copper().pc() == 0x2'0000);
+}
+
+// Write-only registers read as $FFFF (open bus). A read-modify-write such
+// as ORI.W #$8020,$DFF096 therefore sets every DMACON bit, DMAEN included,
+// which Barbarian depends on.
+void test_write_only_registers_read_open_bus() {
+    auto m = std::make_unique<Machine>();
+    MemoryBus& bus = m->bus();
+    EXPECT(bus.read16(custom(reg::kDmaCon)) == 0xFFFF);
+    EXPECT(bus.read16(custom(reg::kColor00)) == 0xFFFF);
+    bus.write16(custom(reg::kDmaCon), static_cast<uint16_t>(bus.read16(custom(reg::kDmaCon)) | 0x8020));
+    EXPECT((bus.read16(custom(reg::kDmaConR)) & reg::kDmaEn) != 0);
+}
+
 void run_machine_tests() {
     test_paula_levels();
     test_autovectors_for_all_levels();
@@ -314,7 +400,11 @@ void run_machine_tests() {
     test_rte_in_user_mode_is_a_privilege_violation();
     test_nmi_is_edge_triggered();
     test_custom_registers_through_bus();
+    test_copjmp_read_strobes();
+    test_write_only_registers_read_open_bus();
     test_beam_counter_and_vertb();
     test_copper_drives_display();
+    test_copper_multiplexes_a_sprite();
+    test_polling_intreqr_with_the_handler_enabled();
     test_vertical_blank_interrupt_end_to_end();
 }

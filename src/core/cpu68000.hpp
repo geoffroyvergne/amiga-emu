@@ -14,8 +14,7 @@ class CpuError final : public std::exception {
 public:
     enum class Kind : uint8_t {
         UnimplementedOpcode,  // kept for completeness; all 68000 opcodes are decoded
-        OddPcFetch,           // 68000 address errors; group 0 exception
-        OddDataAccess,        //   processing is not emulated
+        DoubleBusFault,       // address error while processing an address error: the 68000 halts
     };
 
     CpuError(Kind kind, uint32_t pc, uint16_t opcode, uint32_t address = 0) noexcept;
@@ -45,11 +44,15 @@ private:
 // timing tables (DIVU/DIVS use their worst case).
 //
 // Exceptions: interrupts (autovectored, as on the Amiga; level 7 is
-// edge-triggered), illegal instruction, line A/F, privilege violation, TRAP,
-// TRAPV, CHK and divide by zero. STOP waits for an interrupt.
+// edge-triggered), address error (a word/long access or instruction fetch at
+// an odd address: group 0, 14-byte frame), illegal instruction, line A/F,
+// privilege violation, TRAP, TRAPV, CHK and divide by zero. STOP waits for an
+// interrupt. An address error while stacking an address error frame is a
+// double bus fault: the 68000 halts, reported with CpuError.
 //
-// Not modelled: the prefetch queue, exact bus cycle order, trace mode, and
-// address errors (they panic with CpuError instead of stacking a group 0 frame).
+// Not modelled: the prefetch queue, exact bus cycle order and trace mode.
+// The PC stacked by an address error is the faulting instruction + 2 (the
+// real 68000 stacks a value 2-10 bytes past it, depending on the instruction).
 class Cpu68000 {
 public:
     // Status register bits.
@@ -64,6 +67,8 @@ public:
     static constexpr uint16_t kSrImplementedBits = 0xA71F;  // T . S . . I2 I1 I0 . . . X N Z V C
 
     // Exception vector numbers.
+    static constexpr uint8_t kVectorAddressError = 3;
+    static constexpr uint64_t kMaxAddressErrorLogs = 16;  // then counted silently
     static constexpr uint8_t kVectorIllegal = 4;
     static constexpr uint8_t kVectorZeroDivide = 5;
     static constexpr uint8_t kVectorChk = 6;
@@ -210,6 +215,16 @@ private:
     uint32_t exception(uint8_t vector, uint32_t return_pc, uint32_t cycles);
     uint32_t privilege_violation() { return exception(kVectorPrivilege, instruction_pc_, 34); }
 
+    // Raised by memory accesses and fetches at odd addresses; turned into the
+    // address error exception by step().
+    struct AddressFault {
+        uint32_t address;
+        bool read;
+        bool instruction;  // program space (fetch) rather than data
+    };
+    uint32_t address_error(const AddressFault& fault);
+    uint32_t execute();
+
     // Effective address engine.
     Ea decode_ea(unsigned mode, unsigned reg, Size size);
     uint32_t read_ea(const Ea& ea, Size size);
@@ -251,6 +266,7 @@ private:
     uint8_t ipl_ = 0;
     bool nmi_pending_ = false;
     bool stopped_ = false;
+    bool in_address_error_ = false;
     ResetHandler reset_handler_ = nullptr;
     void* reset_context_ = nullptr;
     std::array<uint64_t, 256> exception_counts_{};

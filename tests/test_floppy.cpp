@@ -6,6 +6,7 @@
 
 #include "core/adf.hpp"
 #include "core/custom_registers.hpp"
+#include "core/cia.hpp"
 #include "core/disk_controller.hpp"
 #include "core/floppy.hpp"
 #include "core/machine.hpp"
@@ -187,6 +188,31 @@ void test_disk_dma_read_with_sync() {
     EXPECT((requests & reg::kIntDskBlk) != 0);
 }
 
+// A sync pattern found between word boundaries: the data after it is read
+// re-aligned to the sync (Prince of Persia's loader syncs on $4891 this way).
+void test_disk_dma_unaligned_sync() {
+    auto bus = std::make_unique<MemoryBus>();
+    DiskController disk;
+    uint16_t requests = 0;
+    disk.write_register(DiskController::kAdkCon, reg::kSetClr | DiskController::kAdkWordSync, requests);
+    disk.write_register(DiskController::kDskSync, 0x4891, requests);
+    disk.write_register(DiskController::kDskPtl, 0x3000, requests);
+    disk.write_register(DiskController::kDskLen, 0x8002, requests);
+    disk.write_register(DiskController::kDskLen, 0x8002, requests);
+
+    // Bit stream: 5 filler bits (10101), the sync, $1234, $5678, then padding,
+    // cut into 16-bit words that don't line up with it.
+    uint64_t stream = 0b10101;
+    stream = stream << 16 | 0x4891;
+    stream = stream << 16 | 0x1234;
+    stream = stream << 16 | 0x5678;
+    stream <<= 11;  // 5 + 48 + 11 = 64 bits
+    for (int w = 3; w >= 0; --w) disk.disk_word(static_cast<uint16_t>(stream >> (16 * w)), bus->chip_ram(), true, requests);
+    EXPECT(bus->read16(0x3000) == 0x1234);
+    EXPECT(bus->read16(0x3002) == 0x5678);
+    EXPECT((requests & reg::kIntDskSyn) != 0 && (requests & reg::kIntDskBlk) != 0);
+}
+
 void test_disk_dma_needs_dsken_and_can_stop() {
     auto bus = std::make_unique<MemoryBus>();
     DiskController disk;
@@ -203,6 +229,141 @@ void test_disk_dma_needs_dsken_and_can_stop() {
     disk.write_register(DiskController::kDskLen, 0xC010, requests);  // write transfer...
     disk.write_register(DiskController::kDskLen, 0xC010, requests);
     EXPECT(!disk.active() && (requests & reg::kIntDskBlk) != 0);  // ...completes at once
+}
+
+// Turbo: a read started through the real registers completes within a frame
+// and holds exactly the MFM stream after a sync mark.
+void test_turbo_dma_read() {
+    for (const bool turbo : {true, false}) {
+        auto m = std::make_unique<amiga::Machine>();
+        m->set_floppy_turbo(turbo);
+        m->insert_disk(AdfImage(patterned_disk()));
+        MemoryBus& bus = m->bus();
+        const auto custom = [](uint16_t offset) { return MemoryBus::kCustomBase + offset; };
+        bus.write8(0xBFD100, 0xFF);  // PRB all high first, so making them outputs doesn't pulse /STEP
+        bus.write8(0xBFD300, 0xFF);  // CIA-B DDRB: outputs
+        bus.write8(0xBFD100, static_cast<uint8_t>(~FloppyDrive::kPrbMtr));     // motor on, not selected
+        bus.write8(0xBFD100, static_cast<uint8_t>(~(FloppyDrive::kPrbMtr | FloppyDrive::kPrbSel0)));  // select DF0
+        bus.write16(custom(DiskController::kAdkCon), reg::kSetClr | DiskController::kAdkWordSync);
+        bus.write16(custom(DiskController::kDskSync), 0x4489);
+        bus.write16(custom(DiskController::kDskPtl), 0x4000);
+        bus.write16(custom(reg::kDmaCon), reg::kSetClr | reg::kDmaEn | reg::kDskEn);
+        bus.write16(custom(DiskController::kDskLen), 0x8000 | 3000);
+        bus.write16(custom(DiskController::kDskLen), 0x8000 | 3000);
+        m->run_frame();
+        EXPECT(m->chipset().disk().active() == !turbo);  // real speed: 3000 words take ~4.8 frames
+        if (!turbo) continue;
+
+        Track mfm{};
+        AdfImage(patterned_disk()).encode_track(0, mfm);
+        size_t match = 0;  // the buffer starts after a sync word: find it in the track
+        for (size_t w = 0; w + 3000 < mfm.size(); ++w) {
+            bool same = mfm[w] == 0x4489;
+            for (size_t i = 0; same && i < 3000; ++i) same = bus.read16(0x4000 + 2 * static_cast<uint32_t>(i)) == mfm[w + 1 + i];
+            if (same) ++match;
+        }
+        EXPECT(match == 1);
+        EXPECT((m->chipset().paula().intreq() & reg::kIntDskBlk) != 0);
+    }
+}
+
+// Trackloader pattern (Prince of Persia's crack): start the read, THEN clear
+// DSKBLK in INTREQ, then poll INTREQR for it. The transfer must not complete
+// before the CPU gets to the clear, turbo or not.
+void test_loader_clears_dskblk_after_starting() {
+    for (const bool turbo : {true, false}) {
+        auto m = std::make_unique<amiga::Machine>();
+        m->set_floppy_turbo(turbo);
+        m->insert_disk(AdfImage(patterned_disk()));
+        MemoryBus& bus = m->bus();
+        const uint16_t program[] = {
+            0x0008, 0x0000, 0x0000, 0x1000,                  // reset vectors: SSP $80000, PC $1000
+        };
+        for (size_t i = 0; i < std::size(program); ++i) bus.write16(static_cast<uint32_t>(2 * i), program[i]);
+        const uint16_t code[] = {
+            0x33FC, 0x8210, 0x00DF, 0xF096,                  // MOVE.W #$8210,DMACON (DMAEN | DSKEN)
+            0x33FC, 0x8400, 0x00DF, 0xF09E,                  // MOVE.W #$8400,ADKCON (WORDSYNC)
+            0x33FC, 0x4489, 0x00DF, 0xF07E,                  // MOVE.W #$4489,DSKSYNC
+            0x23FC, 0x0000, 0x4000, 0x00DF, 0xF020,          // MOVE.L #$4000,DSKPT
+            0x33FC, 0x9900, 0x00DF, 0xF024,                  // MOVE.W #$9900,DSKLEN
+            0x33FC, 0x9900, 0x00DF, 0xF024,                  // MOVE.W #$9900,DSKLEN (starts: 6400 words)
+            0x33FC, 0x0002, 0x00DF, 0xF09C,                  // MOVE.W #$0002,INTREQ (clear DSKBLK)
+            0x3439, 0x00DF, 0xF01E,                          // loop: MOVE.W INTREQR,D2
+            0x0802, 0x0001,                                  //       BTST #1,D2
+            0x67F4,                                          //       BEQ.S loop
+            0x7E01,                                          // MOVEQ #1,D7
+            0x60FE,                                          // BRA.S *
+        };
+        for (size_t i = 0; i < std::size(code); ++i) bus.write16(0x1000 + static_cast<uint32_t>(2 * i), code[i]);
+        m->reset();  // resets the CIAs: set the drive up afterwards
+        bus.write8(0xBFD100, 0xFF);
+        bus.write8(0xBFD300, 0xFF);
+        bus.write8(0xBFD100, static_cast<uint8_t>(~FloppyDrive::kPrbMtr));
+        bus.write8(0xBFD100, static_cast<uint8_t>(~(FloppyDrive::kPrbMtr | FloppyDrive::kPrbSel0)));
+        int frames = 0;
+        while (frames < 30 && m->cpu().d(7) != 1) {
+            m->run_frame();
+            ++frames;
+        }
+        EXPECT(m->cpu().d(7) == 1);           // DSKBLK seen after the clear
+        if (turbo) EXPECT(frames <= 2);       // and turbo is still fast
+    }
+}
+
+// Swapping disks while software only polls /CHNG (Flashback asks for disk 2
+// this way): the change must show on CIA-A PRA without any other CIA access.
+void test_disk_swap_visible_while_polling() {
+    auto m = std::make_unique<amiga::Machine>();
+    m->insert_disk(AdfImage(patterned_disk()));
+    MemoryBus& bus = m->bus();
+    bus.write8(0xBFD100, 0xFF);
+    bus.write8(0xBFD300, 0xFF);
+    bus.write8(0xBFD100, static_cast<uint8_t>(~FloppyDrive::kPrbSel0));  // select DF0
+    const auto chng_low = [&] { return (bus.read8(0xBFE001) & FloppyDrive::kPraChng) == 0; };
+    EXPECT(chng_low());  // power-on: latch set
+    bus.write8(0xBFD100, static_cast<uint8_t>(~(FloppyDrive::kPrbSel0 | FloppyDrive::kPrbStep)));
+    bus.write8(0xBFD100, static_cast<uint8_t>(~FloppyDrive::kPrbSel0));  // a step clears it
+    EXPECT(!chng_low());
+
+    m->insert_disk(AdfImage(patterned_disk()));  // swap: no CIA write in between
+    EXPECT(chng_low());
+    EXPECT(!m->cias().df0().disk_inserted());  // the drive is empty for a while...
+    EXPECT(m->disk_swap_pending());
+    for (unsigned f = 0; f < amiga::Machine::kDiskSwapFrames; ++f) m->run_frame();
+    EXPECT(m->cias().df0().disk_inserted());   // ...then the new disk goes in
+    EXPECT(chng_low());                         // still latched until a step
+    bus.write8(0xBFD100, static_cast<uint8_t>(~(FloppyDrive::kPrbSel0 | FloppyDrive::kPrbStep)));
+    bus.write8(0xBFD100, static_cast<uint8_t>(~FloppyDrive::kPrbSel0));
+    EXPECT(!chng_low());
+
+    m->eject_disk();
+    EXPECT(chng_low());
+}
+
+// Warp follows disk transfers, not the motor: R-Type II leaves the motor on.
+void test_warp_follows_disk_reads_not_the_motor() {
+    auto m = std::make_unique<amiga::Machine>();
+    m->insert_disk(AdfImage(patterned_disk()));
+    MemoryBus& bus = m->bus();
+    const auto custom = [](uint16_t offset) { return MemoryBus::kCustomBase + offset; };
+    bus.write8(0xBFD100, 0xFF);
+    bus.write8(0xBFD300, 0xFF);
+    bus.write8(0xBFD100, static_cast<uint8_t>(~FloppyDrive::kPrbMtr));
+    bus.write8(0xBFD100, static_cast<uint8_t>(~(FloppyDrive::kPrbMtr | FloppyDrive::kPrbSel0)));  // motor on
+    m->run_frame();
+    EXPECT(m->cias().df0().motor_on() && !m->disk_busy());  // spinning, nothing read: no warp
+
+    bus.write16(custom(reg::kDmaCon), reg::kSetClr | reg::kDmaEn | reg::kDskEn);
+    bus.write16(custom(DiskController::kDskPtl), 0x4000);
+    bus.write16(custom(DiskController::kDskLen), 0x8000 | 1000);
+    bus.write16(custom(DiskController::kDskLen), 0x8000 | 1000);
+    m->run_frame();
+    EXPECT(m->disk_busy());  // a transfer runs (at real speed: turbo is off by default)
+    for (int f = 0; f < 10 && m->chipset().disk().active(); ++f) m->run_frame();
+    EXPECT(!m->chipset().disk().active());
+    EXPECT(m->disk_busy());  // done, but warp holds for a while
+    for (uint64_t f = 0; f <= amiga::Machine::kWarpHoldFrames; ++f) m->run_frame();
+    EXPECT(m->cias().df0().motor_on() && !m->disk_busy());  // motor still on, no reads: warp over
 }
 
 }  // namespace
@@ -238,5 +399,10 @@ void run_floppy_tests() {
     test_drive_status_lines();
     test_drive_rotation_and_index();
     test_disk_dma_read_with_sync();
+    test_disk_dma_unaligned_sync();
     test_disk_dma_needs_dsken_and_can_stop();
+    test_turbo_dma_read();
+    test_loader_clears_dskblk_after_starting();
+    test_disk_swap_visible_while_polling();
+    test_warp_follows_disk_reads_not_the_motor();
 }

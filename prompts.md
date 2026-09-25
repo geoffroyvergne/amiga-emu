@@ -105,3 +105,200 @@ We need to emulate the floppy disk drive (DF0:) to load Amiga Disk Files (.adf).
 2- Implement the read pipeline. When the Amiga triggers a Floppy DMA (DSKDAT / DSKPTH / DSKPTL registers), stream the raw MFM encoded data from the loaded .adf file into the Chip RAM, and trigger a Level 5 CPU Interrupt (DISK) when the transfer completes.
 
 3- Add a basic command-line parameter or SDL drag-and-drop mechanism to load an .adf file at startup.
+
+# Step 13: Basic Audio Emulation (Paula Chip) 
+
+The Amiga has 4 hardware audio channels (2 left, 2 right) managed by the Paula chip. Each channel plays samples (8-bit signed) directly from Chip RAM via DMA.
+
+Let's implement rudimentary audio using the Paula custom chip and SDL Audio. Create 4 audio channels. Each channel has registers for sample pointers (AUDxLCH/AUDxLCL), length (AUDxLEN), period/pitch (AUDxPER), and volume (AUDxVOL). Set up an SDL audio callback queue. Inside our main emulation loop, when Audio DMA is active, fetch 8-bit signed samples from Chip RAM according to the channel's period, mix the 4 channels, and feed the buffer to SDL Audio.
+
+# Step 14: drag and drop disk file change
+
+Let's implement Keyboard/Mouse inputs and the Floppy Disk Drive (DF0:) architecture, including an easy way to swap disk files (.adf).
+
+1- Disk Swapping Mechanism:
+
+1.1- In the SDL event loop, catch SDL_EVENT_DROP_FILE. When a file is dropped onto the window, free the current disk image and load the new .adf file path into our Floppy Drive component.
+
+1.2- Alternatively, map the F1, F2, and F3 keys to instantly cycle or load predefined disk files (e.g., disk1.adf, disk2.adf) from the execution directory for rapid testing.
+
+2- Floppy Drive (DF0:) Core:
+
+2.1- Create a basic FloppyDrive component holding the 901,120 bytes of an ADF file (80 tracks * 2 sides * 11 sectors * 512 bytes).
+
+2.2- Connect drive control signals (Motor On, Step, Side, Track 0 detection) to the CIA-A Port B (0xBFE101) and CIA-B Port A (0xBFD000) registers.
+
+2.3- When Floppy DMA is triggered via custom registers DSKPTH/DSKPTL and DSKLEN, stream the requested track data into Chip RAM and trigger a Level 5 CPU Interrupt (DISK) upon completion.
+
+3- Keyboard & Mouse Inputs:
+
+3.1- Map SDL keyboard events to Amiga Raw Keycodes. Write the code into the CIA-A Serial Data Register (SDR, 0xBFED00) and trigger a Level 2 CPU Interrupt (PORTS).
+
+3.2- Map SDL mouse motion to the JOY0DAT (0xDFF00A) quadrature counter register so the Workbench/Kickstart mouse pointer can move.
+
+# Fix workbench load : 
+
+I successfully implemented the Drag & Drop mechanism and inserted a Workbench 1.3 ADF disk. However, the emulator froze, and the display output became heavily corrupted/degraded. This indicates that the CPU is executing garbage data or the graphics subsystem is misconfigured during disk reading.
+
+Let's fix this by addressing the most common root causes:
+
+1- Amiga MFM Floppy Encoding Check: An Amiga hardware disk controller expects track data to be MFM encoded, not raw sector data. If our FloppyDrive component dumps raw ADF sectors straight into RAM, the Amiga OS reads corrupted instructions. If we haven't implemented an MFM encoder/decoder, update the floppy DMA simulation to either map raw sectors to simulated MFM sync marks (0xAAAA / 0x4489) or implement a high-level bypass so the OS receives valid executable bytes in Chip RAM.
+
+2- Blitter Check: Workbench heavily relies on the Blitter custom chip (BLTCON0, BLTSIZE, etc.) to draw icons and windows. If the Blitter is missing or blocking execution, the screen freezes. Add a basic stub or synchronized execution for Blitter registers if they are being written to.
+
+3- CPU Post-Mortem Logging: When the freeze occurs, print a precise debug dump in the terminal showing:
+
+3.1- The last 50 executed instructions (PC and opcode name).
+
+3.2- The current state of INTREQ (Interrupt Request) and DMACON (DMA Control) registers.
+
+3.3- Whether the CPU encountered an Illegal Opcode, an Address Error (unaligned 16/32-bit access), or a Double Bus Fault.
+
+Let's analyze the logs or fix the Floppy DMA loop to ensure the code executed from the disk is accurate.
+
+# Boost CPU and add sound
+
+The Workbench 1.3 desktop now successfully boots and renders on screen! However, the emulation speed is quite slow during disk loading and system execution. Let's implement two final upgrades to make the emulator fully usable:
+
+1- Performance & Speed Optimization:
+
+1.1- Floppy Fast Forward: Implement a 'Turbo' flag for the disk drive. When Floppy DMA is active (DSKLEN is processing data), temporarily bypass the realistic sector delays to transfer the data instantly into Chip RAM. This will make Workbench boot in a few seconds.
+
+1.2- Compiler Optimization Checks: Ensure that inline functions used for memory operations (read16, write16) and flag updates in the Cpu68000 class are correctly marked as inline or constexpr, allowing the compiler to optimize the hot paths.
+
+2- Audio Implementation (Paula Custom Chip):
+
+2.1- Let's add sound using SDL Audio (SDL_AudioStream or Callback).
+
+2.2- Implement the hardware registers for the 4 audio channels: AUDxLCH/LCL (Sample Pointer), AUDxLEN (Length), AUDxPER (Period/Pitch), and AUDxVOL (Volume, 0-64).
+
+2.3- In our main execution loop, when Audio DMA is enabled in DMACON, stream 8-bit signed samples from Chip RAM, modulate them according to their channel period, and mix them together into a standard stereo floating-point or 16-bit buffer for SDL Audio.
+
+Let's implement these two features to complete our core operational Amiga 500 emulator.
+
+# Keyboard and mouse
+
+The fast boot is working perfectly! Now, let's implement the complete Keyboard and Mouse user interactions so we can fully navigate the Workbench desktop.
+
+1- Hardware Mouse Emulation (Agnus Quadrature):
+
+1.1- Catch SDL_EVENT_MOUSE_MOTION in the main SDL event loop.
+
+1.2- Map relative mouse movements (event.motion.xrel and yrel) to the JOY0DAT (0xDFF00A) register. Amiga tracks the mouse using an 8-bit horizontal counter (low byte) and an 8-bit vertical counter (high byte) that increment/decrement using quadrature encoding.
+
+1.3- Map Left Mouse Button clicks to CIA-A Port A, bit 6 (0xBFE001). A value of 0 means pressed, 1 means released.
+
+1.4- Map Right Mouse Button clicks to the custom register POTGO (0xDFF016, bit 10 or 14) as expected by the OCS hardware.
+
+2- Hardware Keyboard Emulation (CIA-A Serial Transfer):
+
+2.1- Create a mapping table from SDL Scancodes to Amiga Raw Keycodes (e.g., Space = 0x40, Return = 0x44, Escape = 0x45).
+
+2.2- When an SDL key event occurs (SDL_EVENT_KEY_DOWN or SDL_EVENT_KEY_UP):
+
+2.2.1- Format the 7-bit Amiga keycode. For key release (KEY_UP), set bit 7 to 1 (e.g., keycode | 0x80).
+
+2.2.2- Load this byte into the CIA-A Serial Data Register (SDR, 0xBFED00).
+
+2.2.3- Set bit 3 (PORTS) in the custom interrupt registers INTREQ (0xDFF09C) to trigger a Level 2 CPU Interrupt, signaling the Amiga OS that a key matrix change occurred.
+
+Let's integrate this input mapping layer into our main execution loop so we can move the cursor and click on icons inside Workbench.
+
+# keyboard in games
+
+The keyboard works perfectly on the Workbench, and the mouse works in games, but I cannot play games because they require an Amiga Joystick plugged into Port 2.
+
+Let's implement Joystick Port 2 Emulation mapped to the host keyboard arrow keys (or WASD):
+
+1- Joystick Registers Configuration:
+
+1.1- Amiga tracks Joystick 2 via the JOY1DAT (0xDFF00C) register. Like the mouse, it uses quadrature counters where the bits represent directions.
+
+1.2- Specifically, bit 1 is Right, bit 0 is (Left XOR Right), bit 9 is Down, and bit 8 is (Up XOR Down).
+
+1.3- The Joystick 2 Fire Button is read from CIA-A Port A, bit 7 (0xBFE001). A value of 0 means pressed, 1 means released.
+
+2- SDL Input Mapping:
+
+2.2- Inside our SDL event loop, intercept when the user presses Arrow Keys (Up, Down, Left, Right) or WASD. Modify the bits of JOY1DAT accordingly to simulate physical joystick directional movements.
+
+2.3- Map the Left Ctrl key, Spacebar, or Left Alt key to act as the Joystick Fire Button, changing bit 7 of 0xBFE001.
+
+Let's inject this Joystick emulation layer into our project so that commercial games can register movement and fire inputs.
+
+# complete input mapping
+
+Let's complete our input mapping system by implementing a comprehensive fallback bridge between the SDL Gamepad buttons and the Amiga Keyboard / Mouse subsystem. Many Amiga games require specific keyboard presses or mouse clicks to bypass intros, select options, or access submenus.
+
+Map the remaining physical Gamepad buttons to the following emulated Amiga hardware states:
+
+1- Menu / Intro Bypass (Start & Select Buttons):
+
+1.1- Map the Gamepad START button (SDL_GAMEPAD_BUTTON_START) to trigger the Amiga Return / Enter Key (0x44 on the keyboard matrix) and Spacebar (0x40) simultaneously or conditionally, as these are universally used to skip intros.
+
+1.2- Map the Gamepad BACK / SELECT button (SDL_GAMEPAD_BUTTON_BACK) to trigger the Amiga Escape Key (0x45), which is often used to abort cinematic sequences.
+
+2- Secondary Controls (Face & Shoulder Buttons):
+
+2.1- Map the Gamepad EAST button (B on Xbox / Circle on PS) to trigger Spacebar (0x40) or act as a secondary action button.
+
+2.2- Map the Gamepad WEST button (X on Xbox / Square on PS) to trigger the Amiga 'Y' or 'N' keys (useful for instant confirmation prompts in games).
+
+3- Mouse Click Emulation via Shoulder Buttons (For Trainer/Cracktro menus):
+
+3.1- Map the Gamepad Left Shoulder (LB/L1) to act as an Amiga Left Mouse Click (setting bit 6 of CIAAPRA to 0).
+
+3.2- Map the Gamepad Right Shoulder (RB/R1) to act as an Amiga Right Mouse Click (modifying the POTGO register).
+
+3.3- This allows navigating text-based cracktros or game configuration launchers using only the controller.
+
+Please implement this expanded mapping layout cleanly within our existing SDL input polling thread.
+
+# Joypad in game
+
+Let's add native support for physical USB / Bluetooth Gamepads using the SDL Gamepad API, mapping it directly to the Amiga's Joystick Port 2.
+
+1- Initialization:
+
+1.1- In our SDL initialization code, call SDL_Init(SDL_INIT_GAMEPAD) (or SDL_INIT_GAMECONTROLLER if using SDL2).
+
+1.2- Handle gamepad connection and disconnection events (SDL_EVENT_GAMEPAD_ADDED and SDL_EVENT_GAMEPAD_REMOVED) to automatically open the first available physical gamepad using SDL_OpenGamepad.
+
+2- Input Mapping to Amiga Registers:
+
+2.1- D-Pad & Left Joystick: Map the physical D-Pad (Up, Down, Left, Right) or the Left Analog Stick movements to the JOY1DAT (0xDFF00C) quadrature register bits, reusing the logic we established for the keyboard arrow keys.
+
+2.2- Fire Button: Map the primary gamepad action button (e.g., SDL_GAMEPAD_BUTTON_SOUTH, which corresponds to 'A' on Xbox or 'Cross' on PlayStation) to control the Joystick 2 Fire Button on CIA-A Port A, bit 7 (0xBFE001) (0 for pressed, 1 for released).
+
+Ensure all opened gamepad resources are cleanly closed when exiting the application. Let's integrate this feature to play commercial games with a real controller.
+
+# Fix crash games
+
+Some commercial games are crashing, hanging on a black screen, or failing to boot. Let's implement a robust Hardware Diagnostic and Crash Reporting System to help us identify what specific hardware feature or opcode behavior is missing or failing.
+
+Trap Critical 68000 Exceptions:
+
+Implement full detection and terminal warnings for Address Errors (attempting to read/write a 16-bit or 32-bit word at an odd memory address).
+
+Trap Illegal Opcodes and print the exact hex values and the PC where it happened.
+
+Monitor Double Bus Faults (when a critical exception occurs while the CPU is already processing an exception) and halt the emulation cleanly.
+
+Implement an In-Memory Ring Buffer Log:
+
+Create a small rolling history buffer that keeps track of the last 100 executed instructions (storing PC, opcode hex, and basic register state D0-D7/A0-A7).
+
+When a crash occurs, print this execution history to the console so we can see the exact code pathway leading to the failure.
+
+Monitor Hardware Deadlocks (Hang Detection):
+
+If the CPU executes the exact same PC address or loops within a tiny 2-instruction window more than 50,000 times consecutively, flag a Deadlock Warning.
+
+In this warning, display the current state of custom registers, specifically DMACON (DMA Status), INTREQ (Interrupt Requests), and the Blitter Busy bit (BBUSY in BLTCON0/DMACONR) to see if the game is waiting forever for an interrupt or a copper/blitter action.
+
+Optional Fast RAM Toggle:
+
+Provide an easy boolean toggle or architecture flag in MemoryBus to optionally expand the system memory with 512KB of Slow/Fast RAM mapped at 0xC00000 (the typical Amiga 500 trapdoor expansion), as many games require 1MB total RAM to boot.
+
+Let's integrate this diagnostic engine so we can get precise logs when a game fails to start.
+

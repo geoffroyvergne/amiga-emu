@@ -1,0 +1,185 @@
+*** DEADLOCK WARNING at frame 813: the CPU has run the same loop 50000 times in a row ***
+  loop: 0004033C  0839  BTST    #6,$00BFE001
+  loop: 00040344  66F6  BNE.S   $0004033C
+  reads/writes: CIA-A PRA
+  likely cause: polling CIA-A PRA: waiting for a mouse/fire button (or a disk status line)
+  DMACONR  = $23A0: BZERO DMAEN BPLEN COPEN SPREN
+             BBUSY=0 (blits complete when started in this emulator, so a BBUSY wait never hangs)
+  INTENA   = $0000:
+  INTREQ   = $0020: VERTB
+  requested, not enabled = $0020: VERTB
+  interrupts are disabled (INTEN clear)
+  CPU: PC=00040344 SR=2000 (interrupt mask 0), CPU interrupt level from Paula: 0
+  Copper: waiting at $0405A8, beam V=000 H=00
+  CIA-A ICR=00 mask=0A  CIA-B ICR=00 mask=04
+
+*** CPU looping in a tight range for 5 s at frame 1052 ***
+==================== emulator state ====================
+frame 1052, CPU cycles 149491310, CPU running
+
+--- last 100 instructions (oldest first; registers changed by each) ---
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       
+  0004033C  0839  BTST    #6,$00BFE001                    
+  00040344  66F6  BNE.S   $0004033C                       <- next
+
+--- CPU ---
+  D0=0BA80100  D1=0000FFFF  D2=00000000  D3=00000000  D4=00000000  D5=00000000  D6=FFFF0000  D7=0000FFFF
+  A0=000405A2  A1=000438A8  A2=000438F3  A3=000405B8  A4=000301B0  A5=000447A8  A6=00DFF000  A7=00C7FFFA
+  PC=00040344  SR=2000  USP=00C0146E  SSP=00C7FFFA  IPL mask=0
+  exceptions taken: vec4=1 vec8=190 vec25=66 vec26=103 vec27=682 vec30=373 vec32=2
+  faults: address errors=0, illegal opcodes=1 (line A=0, line F=0), privilege violations=190, unmapped access=no, double bus fault=no
+
+--- custom chips ---
+  beam V=000 H=00  DMACONR=03A0  INTENAR=0000  INTREQR=0020  IPL=0
+  Copper: PC=0405A8 state=waiting COP1LC=0404B4 COP2LC=00B888
+  registers written (last value):
+    DSKPTH  =0000    DSKPTL  =2064    DSKLEN  =4000    VPOSW   =8001    SERPER  =0174    POTGO   =0F00
+    BLTCON0 =1DD8    BLTCON1 =0002    BLTAFWM =FFFF    BLTALWM =FFFF    BLTCPTH =0000    BLTCPTL =721E
+    BLTBPTH =0000    BLTBPTL =315F    BLTAPTH =0000    BLTAPTL =2F5F    BLTDPTH =0003    BLTDPTL =57FF
+    BLTSIZE =0808    BLTCMOD =FFD0    BLTBMOD =0000    BLTAMOD =0000    BLTDMOD =0000    BLTCDAT =5555
+    BLTBDAT =FFFF    BLTADAT =FFFF    COP1LCH =0004    COP1LCL =04B4    COP2LCH =0000    COP2LCL =B888
+    COPJMP1 =0180    COPJMP2 =0000    DIWSTRT =3080    DIWSTOP =F0C0    DDFSTRT =0038    DDFSTOP =00CC
+    DMACON  =83A0    INTENA  =7FFF    INTREQ  =7FFF    ADKCON  =9100    AUD0LCH =0004    AUD0LCL =4CCA
+    AUD0LEN =000D    AUD0PER =0C1D    AUD0VOL =0004    AUD1LCH =0004    AUD1LCL =4CCA    AUD1LEN =000D
+    AUD1PER =0C2B    AUD1VOL =0004    AUD2LCH =0004    AUD2LCL =4CCA    AUD2LEN =000D    AUD2PER =0C33
+    AUD2VOL =0004    AUD3LCH =0004    AUD3LCL =4CCA    AUD3LEN =000D    AUD3PER =0C47    AUD3VOL =0004
+    BPL1PTH =0004    BPL1PTL =0BA8    BPL2PTH =0004    BPL2PTL =4ECC    BPL3PTH =0004    BPL3PTL =4EF4
+    BPL4PTH =0004    BPL4PTL =4F1C    BPL5PTH =0004    BPL5PTL =4F44    BPLCON0 =9200    BPLCON1 =0077
+    BPLCON2 =0064    BPL1MOD =0000    BPL2MOD =0000    BPL1DAT =0000    BPL2DAT =0000    BPL3DAT =0000
+    BPL4DAT =0000    BPL5DAT =0000    BPL6DAT =0000    SPR0PTH =0000    SPR0PTL =0000    SPR1PTH =0000
+    SPR1PTL =0000    SPR2PTH =0000    SPR2PTL =0000    SPR3PTH =0000    SPR3PTL =0000    SPR4PTH =0000
+    SPR4PTL =0000    SPR5PTH =0000    SPR5PTL =0000    SPR6PTH =0000    SPR6PTL =0000    SPR7PTH =0000
+    SPR7PTL =0000    SPR0POS =0000    SPR0CTL =0000    SPR0DATA=0000    SPR0DATB=0000    SPR1POS =0000
+    SPR1CTL =0000    SPR1DATA=0000    SPR1DATB=0000    SPR2POS =0000    SPR2CTL =0000    SPR2DATA=0000
+    SPR2DATB=0000    SPR3POS =0000    SPR3CTL =0000    SPR3DATA=0000    SPR3DATB=0000    SPR4POS =0000
+    SPR4CTL =0000    SPR4DATA=0000    SPR4DATB=0000    SPR5POS =0000    SPR5CTL =0000    SPR5DATA=0000
+    SPR5DATB=0000    SPR6POS =0000    SPR6CTL =0000    SPR6DATA=0000    SPR6DATB=0000    SPR7POS =0000
+    SPR7CTL =0000    SPR7DATA=0000    SPR7DATB=0000    COLOR00 =0000    COLOR01 =0EEE    COLOR02 =0001
+    COLOR03 =0001    COLOR04 =0001    COLOR05 =0000    COLOR06 =0000    COLOR07 =0000    COLOR08 =0000
+    COLOR09 =0000    COLOR10 =0000    COLOR11 =0000    COLOR12 =0000    COLOR13 =0000    COLOR14 =0000
+    COLOR15 =0000    COLOR16 =0000    COLOR17 =0000    COLOR18 =0000    COLOR19 =0000    COLOR20 =0000
+    COLOR21 =0000    COLOR22 =0000    COLOR23 =0000    COLOR24 =0000    COLOR25 =0000    COLOR26 =0000
+    COLOR27 =0000    COLOR28 =0000    COLOR29 =0000    COLOR30 =0000    COLOR31 =0000
+
+--- CIA-A --- PRA=FC PRB=FF DDRA=03 DDRB=00 TALO=FF TAHI=FF TBLO=CB TBHI=02 TODLO=B3 TODMID=03 TODHI=00 SDR=02 ICR=00 CRA=00 CRB=08 ICRmask=0A
+
+--- CIA-B --- PRA=FF PRB=FF DDRA=C0 DDRB=FF TALO=C9 TAHI=0B TBLO=FF TBHI=FF TODLO=80 TODMID=0E TODHI=03 SDR=00 ICR=00 CRA=00 CRB=80 ICRmask=04
+  overlay off
+=========================================================
+[cpu] address error: word/long read at odd address $FFFFFFFF by opcode $32DA at $00079648; vector 3 handler at $00FC081A
+[chipset] warning: read of unemulated custom register $DFF018 ignored
+[cpu] illegal instruction $4E7B at $00FC0564
+
+*** DEADLOCK WARNING at frame 3039: the CPU has run the same loop 50000 times in a row ***
+  loop: 0004033C  0839  BTST    #6,$00BFE001
+  loop: 00040344  66F6  BNE.S   $0004033C
+  reads/writes: CIA-A PRA
+  likely cause: polling CIA-A PRA: waiting for a mouse/fire button (or a disk status line)
+  DMACONR  = $23A0: BZERO DMAEN BPLEN COPEN SPREN
+             BBUSY=0 (blits complete when started in this emulator, so a BBUSY wait never hangs)
+  INTENA   = $0000:
+  INTREQ   = $0020: VERTB
+  requested, not enabled = $0020: VERTB
+  interrupts are disabled (INTEN clear)
+  CPU: PC=0004033C SR=2000 (interrupt mask 0), CPU interrupt level from Paula: 0
+  Copper: waiting at $0405A8, beam V=000 H=00
+  CIA-A ICR=00 mask=0A  CIA-B ICR=00 mask=04
+2026-09-25 23:22:33.598 amiga_emu[4769:3498330] Exiting after 4152 frames (854 in warp, 590007506 CPU cycles, 1 pacer resyncs)

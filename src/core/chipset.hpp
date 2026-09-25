@@ -10,6 +10,8 @@
 #include "core/disk_controller.hpp"
 #include "core/memory_bus.hpp"
 #include "core/paula.hpp"
+#include "core/paula_audio.hpp"
+#include "core/sprites.hpp"
 
 namespace amiga {
 
@@ -58,8 +60,13 @@ public:
     [[nodiscard]] Copper& copper() noexcept { return copper_; }
     [[nodiscard]] Blitter& blitter() noexcept { return blitter_; }
     [[nodiscard]] DiskController& disk() noexcept { return disk_; }
+    [[nodiscard]] PaulaAudio& audio() noexcept { return audio_; }
+    [[nodiscard]] const Sprites& sprites() const noexcept { return sprites_; }
+    [[nodiscard]] const PaulaAudio& audio() const noexcept { return audio_; }
 
 private:
+    static constexpr uint16_t kFirstWriteOnlyRegister = 0x020;  // DSKPTH
+    static constexpr uint16_t kOpenBusValue = 0xFFFF;
     void render_line(uint16_t vpos) noexcept;
     void warn_unemulated(uint16_t offset, bool is_write) noexcept;
     void check_bplcon0(uint16_t value) noexcept;
@@ -72,6 +79,8 @@ private:
     Copper copper_;
     Blitter blitter_;
     DiskController disk_;
+    PaulaAudio audio_;
+    Sprites sprites_;
     Frame frame_{};
     LineFetch line_fetch_{};
     bool warned_bplcon0_ = false;

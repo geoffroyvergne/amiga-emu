@@ -6,6 +6,7 @@
 
 #include "core/agnus.hpp"
 #include "core/custom_registers.hpp"
+#include "core/sprites.hpp"
 
 namespace amiga {
 
@@ -28,8 +29,18 @@ namespace amiga {
 // It also holds the port counters: JOY0DAT (mouse, port 0) and JOY1DAT
 // (joystick, port 1).
 //
-// Limitations: sprites and collisions are not emulated, and a whole line is
-// rendered at once (register changes in the middle of a line apply to all of it).
+// Sprites are composited with the BPLCON2 priorities (PF1P/PF2P: sprite
+// pairs below the code are in front of that playfield; single playfield
+// uses PF2P) and only inside the display window, as on OCS.
+//
+// Collisions (CLXCON/CLXDAT) are checked per pixel inside the display window:
+// odd planes vs even planes, each against the four sprite groups (a group is
+// its even sprite, plus the odd one if CLXCON enables it), and the groups
+// against each other. A playfield "collides" where its enabled planes match
+// the CLXCON match bits (no plane enabled: everywhere).
+//
+// Limitations: bitplane and palette register changes in the middle of a line
+// apply to all of it (sprites follow mid-line changes, see sprites.hpp).
 class Denise {
 public:
     static constexpr unsigned kOutputWidth = 640;  // hires resolution; lowres pixels are doubled
@@ -39,7 +50,14 @@ public:
 
     using Row = std::span<uint32_t, kOutputWidth>;
 
-    Denise() noexcept { update_palette(); }
+    // Collision registers (HRM chapter 7).
+    static constexpr uint16_t kClxDat = 0x00E;  // read: collisions (cleared by reading)
+    static constexpr uint16_t kClxCon = 0x098;  // ENSP7/5/3/1 | ENBP6-1 | MVBP6-1
+
+    Denise() noexcept {
+        update_palette();
+        build_collision_tables();
+    }
 
     // OCS colour registers are 12-bit $0RGB; expand each 4-bit channel to 8 bits.
     [[nodiscard]] static constexpr uint32_t rgb12_to_argb(uint16_t rgb) noexcept {
@@ -70,6 +88,7 @@ public:
                     mouse_y_[port] = static_cast<uint8_t>((mouse_y_[port] & 3u) | ((value >> 8) & 0xFCu));
                 }
                 return true;
+            case kClxCon: clxcon_ = value; build_collision_tables(); return true;
             case reg::kBplCon0: bplcon0_ = value; return true;
             case reg::kBplCon1: bplcon1_ = value & 0x00FFu; return true;
             case reg::kBplCon2: bplcon2_ = value & 0x007Fu; return true;
@@ -105,10 +124,34 @@ public:
     [[nodiscard]] uint32_t palette(unsigned index) const noexcept { return palette_[index & 31u]; }
     [[nodiscard]] uint16_t bplcon0() const noexcept { return bplcon0_; }
 
-    // Produces one output line from the words Agnus fetched for it.
-    void render_line(const LineFetch& fetch, const DisplayWindow& window, Row out) const noexcept;
+    // Produces one output line from the words Agnus fetched for it, with the
+    // sprites armed on this line on top (or behind, per BPLCON2).
+    // Also accumulates collisions into CLXDAT.
+    void render_line(const LineFetch& fetch, const DisplayWindow& window, const Sprites& sprites,
+                     Row out) noexcept;
+
+    // CLXDAT: collisions since the last read; reading clears them. Bit 15 is
+    // unused and reads as 1.
+    [[nodiscard]] uint16_t read_collisions() noexcept {
+        const auto value = static_cast<uint16_t>(0x8000u | clxdat_);
+        clxdat_ = 0;
+        return value;
+    }
 
 private:
+    [[nodiscard]] uint16_t collisions(unsigned planes, unsigned sprites) const noexcept {
+        const unsigned match = plane_match_[planes & 0x3Fu];  // bit 0 odd planes, bit 1 even planes
+        uint16_t bits = match == 3 ? 1u : 0u;
+        if (sprites == 0) return bits;
+        const unsigned groups = sprite_groups_[sprites & 0xFFu];
+        if ((match & 1u) != 0) bits = static_cast<uint16_t>(bits | groups << 1);
+        if ((match & 2u) != 0) bits = static_cast<uint16_t>(bits | groups << 5);
+        return static_cast<uint16_t>(bits | group_pairs_[groups]);
+    }
+    // Precomputed from CLXCON: plane match per plane pattern, sprite groups
+    // per opaque-sprite mask, group-vs-group bits per group set.
+    void build_collision_tables() noexcept;
+
     void update_palette() noexcept {
         for (unsigned i = 0; i < color_.size(); ++i) {
             palette_[i] = rgb12_to_argb(color_[i]);
@@ -122,6 +165,11 @@ private:
     uint16_t bplcon0_ = 0;
     uint16_t bplcon1_ = 0;
     uint16_t bplcon2_ = 0;
+    uint16_t clxcon_ = 0;
+    uint16_t clxdat_ = 0;
+    std::array<uint8_t, 64> plane_match_{};
+    std::array<uint8_t, 256> sprite_groups_{};
+    std::array<uint16_t, 16> group_pairs_{};
     std::array<uint8_t, 2> mouse_x_{};  // per port
     std::array<uint8_t, 2> mouse_y_{};
 };

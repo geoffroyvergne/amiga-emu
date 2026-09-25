@@ -176,12 +176,13 @@ void MemoryBus::rebuild_banks() noexcept {
     banks_.fill(Bank{});
 
     map(kChipRamBase, kChipRamWindowEnd, chip_ram_.data(), kChipRamSize - 1, true);
-    map(kSlowRamBase, kSlowRamBase + kSlowRamSize, slow_ram_.data(), kSlowRamSize - 1, true);
+    if (slow_ram_enabled_) map(kSlowRamBase, kSlowRamBase + kSlowRamSize, slow_ram_.data(), kSlowRamSize - 1, true);
 
     if (custom_ != nullptr) {
         // The 64KB bank holding $DFF000; only $DFF000-$DFF1FF is decoded
         // (checked in read_custom/write_custom).
-        for (uint32_t bank = (kSlowRamBase + kSlowRamSize) >> kBankShift; bank <= (kCustomBase >> kBankShift); ++bank) {
+        const uint32_t first = slow_ram_enabled_ ? kSlowRamBase + kSlowRamSize : kSlowRamBase;
+        for (uint32_t bank = first >> kBankShift; bank <= (kCustomBase >> kBankShift); ++bank) {
             banks_[bank].custom = true;
         }
     }

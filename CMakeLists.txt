@@ -59,8 +59,12 @@ add_executable(tests_emu
     tests/test_cia.cpp
     tests/test_cpu_isa.cpp
     tests/test_kickstart_boot.cpp
-    tests/test_floppy.cpp)
-target_link_libraries(tests_emu PRIVATE amiga_core)
+    tests/test_floppy.cpp
+    tests/test_audio.cpp
+    tests/test_keyboard_joystick.cpp
+    tests/test_gamepad_mapping.cpp
+    tests/test_diagnostics.cpp)
+target_link_libraries(tests_emu PRIVATE amiga_core SDL3::Headers)  # front-end headers only
 
 enable_testing()
 add_test(NAME tests_emu COMMAND tests_emu)

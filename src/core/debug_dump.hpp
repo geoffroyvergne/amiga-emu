@@ -17,4 +17,9 @@ namespace amiga {
 // state, and both CIAs. Debug only: allocates.
 void dump_state(Machine& machine, std::FILE* out, size_t instructions = 100);
 
+// Deadlock warning: the loop, the hardware registers it polls (with a hint
+// of what it is probably waiting for), DMACON (incl. BBUSY), INTENA/INTREQ,
+// the Copper and the CIA interrupt state.
+void dump_deadlock(Machine& machine, const Machine::Deadlock& deadlock, std::FILE* out);
+
 }  // namespace amiga

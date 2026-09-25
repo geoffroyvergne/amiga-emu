@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <exception>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,6 +19,8 @@
 #include "core/machine.hpp"
 #include "core/memory_bus.hpp"
 #include "core/timing.hpp"
+#include "frontend/gamepad_mapping.hpp"
+#include "frontend/keyboard_joystick.hpp"
 #include "frontend/sdl_keymap.hpp"
 
 namespace {
@@ -27,6 +30,12 @@ constexpr int kFrameWidth = static_cast<int>(amiga::Denise::kOutputWidth);
 constexpr int kFrameHeight = static_cast<int>(amiga::Denise::kDisplayLines);
 constexpr int kWindowWidth = kFrameWidth;
 constexpr int kWindowHeight = kFrameHeight * 2;
+
+// Audio arrives at 71051 / 74 = 960.15 stereo samples per emulated frame; the
+// window shows 50 frames per second, so the stream is fed at 48007 Hz.
+constexpr int kAudioRate = static_cast<int>(amiga::timing::kPalFrameRateHz * amiga::timing::kPalColorClocksPerFrame /
+                                            amiga::Machine::kColorClocksPerSample);
+constexpr int kMaxQueuedAudioBytes = kAudioRate * 4 / 10;  // 100 ms of 16-bit stereo
 
 struct SdlDeleter {
     void operator()(SDL_Window* w) const noexcept { SDL_DestroyWindow(w); }
@@ -123,18 +132,24 @@ void load_test_pattern(amiga::Machine& m) {
 // Host input to the emulated keyboard, mouse (port 1) and joystick (port 2).
 // Clicking in the window captures the mouse (relative mode) and F12 releases
 // it. Esc is an Amiga key; quit by closing the window. The first gamepad
-// connected is the joystick: D-pad or left stick, South button (A/Cross) fires.
+// connected is the joystick: D-pad or left stick, South button (A/Cross) fires;
+// its other buttons act as Amiga keys and mouse buttons (see gamepad_mapping.hpp).
 // Disks: drop an .adf on the window, or hold F12 and press F1/F2/F3 to load
 // disk1/2/3.adf from the emulator's directory (F1-F3 alone go to the Amiga).
+// F12+J toggles the keyboard joystick (port 2): arrows/WASD move, Left Ctrl,
+// Space or Left Alt fire; those keys then no longer reach the Amiga keyboard.
 class HostInput {
 public:
-    HostInput(amiga::Machine& machine, SDL_Window* window) noexcept
-        : machine_(machine), window_(window) {}
+    HostInput(amiga::Machine& machine, SDL_Window* window, bool keyboard_joystick) noexcept
+        : machine_(machine), window_(window), keyboard_joystick_on_(keyboard_joystick) {
+        update_title();
+    }
 
     // Returns false when the user asked to quit.
     bool pump() noexcept {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+            if (log_input_) log_event(event);
             switch (event.type) {
                 case SDL_EVENT_QUIT:
                 case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
@@ -156,18 +171,25 @@ public:
                 case SDL_EVENT_MOUSE_BUTTON_UP:
                     on_button(event.button);
                     break;
-                case SDL_EVENT_GAMEPAD_ADDED:
-                    if (gamepad_ == nullptr) gamepad_ = SDL_OpenGamepad(event.gdevice.which);
+                case SDL_EVENT_GAMEPAD_ADDED:  // also sent at start-up for pads already connected
+                    if (gamepad_ == nullptr) {
+                        gamepad_ = SDL_OpenGamepad(event.gdevice.which);
+                        if (gamepad_ != nullptr) SDL_Log("Joystick: %s", SDL_GetGamepadName(gamepad_));
+                    }
                     break;
                 case SDL_EVENT_GAMEPAD_REMOVED:
                     if (gamepad_ != nullptr && SDL_GetGamepadID(gamepad_) == event.gdevice.which) {
+                        release_pad_buttons();
                         SDL_CloseGamepad(gamepad_);
-                        gamepad_ = nullptr;
+                        gamepad_ = open_other_gamepad(event.gdevice.which);
                         update_joystick();
                     }
                     break;
                 case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
                 case SDL_EVENT_GAMEPAD_BUTTON_UP:
+                    on_pad_button(static_cast<SDL_GamepadButton>(event.gbutton.button), event.gbutton.down);
+                    update_joystick();
+                    break;
                 case SDL_EVENT_GAMEPAD_AXIS_MOTION:
                     update_joystick();
                     break;
@@ -178,9 +200,18 @@ public:
         return true;
     }
 
-    ~HostInput() {
-        if (gamepad_ != nullptr) SDL_CloseGamepad(gamepad_);
+    void set_log_input(bool enabled) noexcept { log_input_ = enabled; }
+
+    // Releases everything held and closes the gamepad. Call before SDL_Quit();
+    // the destructor only does it if that was forgotten.
+    void close() noexcept {
+        if (gamepad_ == nullptr) return;
+        release_pad_buttons();
+        SDL_CloseGamepad(gamepad_);
+        gamepad_ = nullptr;
+        update_joystick();
     }
+    ~HostInput() { close(); }
     HostInput(const HostInput&) = delete;
     HostInput& operator=(const HostInput&) = delete;
 
@@ -188,19 +219,81 @@ private:
     // A digital joystick has switches: the stick counts past half its travel.
     static constexpr int16_t kStickThreshold = 16384;
 
-    void update_joystick() noexcept {
-        if (gamepad_ == nullptr) {
-            machine_.joystick(false, false, false, false, false);
-            return;
+    // After the active pad is unplugged: the next connected one, if any.
+    static SDL_Gamepad* open_other_gamepad(SDL_JoystickID removed) noexcept {
+        int count = 0;
+        SDL_JoystickID* ids = SDL_GetGamepads(&count);
+        SDL_Gamepad* pad = nullptr;
+        for (int i = 0; ids != nullptr && i < count && pad == nullptr; ++i) {
+            if (ids[i] != removed) pad = SDL_OpenGamepad(ids[i]);
         }
-        const auto button = [this](SDL_GamepadButton b) { return SDL_GetGamepadButton(gamepad_, b); };
-        const int16_t x = SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTX);
-        const int16_t y = SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTY);
-        machine_.joystick(button(SDL_GAMEPAD_BUTTON_DPAD_UP) || y < -kStickThreshold,
-                          button(SDL_GAMEPAD_BUTTON_DPAD_DOWN) || y > kStickThreshold,
-                          button(SDL_GAMEPAD_BUTTON_DPAD_LEFT) || x < -kStickThreshold,
-                          button(SDL_GAMEPAD_BUTTON_DPAD_RIGHT) || x > kStickThreshold,
-                          button(SDL_GAMEPAD_BUTTON_SOUTH));
+        SDL_free(ids);
+        if (pad != nullptr) SDL_Log("Joystick: %s", SDL_GetGamepadName(pad));
+        return pad;
+    }
+
+    static void log_event(const SDL_Event& e) noexcept {
+        switch (e.type) {
+            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_UP:
+                SDL_Log("[input] key %s %s%s", SDL_GetScancodeName(e.key.scancode), e.key.down ? "down" : "up",
+                        e.key.repeat ? " (repeat)" : "");
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                SDL_Log("[input] mouse button %u %s at %.0f,%.0f", e.button.button, e.button.down ? "down" : "up",
+                        e.button.x, e.button.y);
+                break;
+            case SDL_EVENT_WINDOW_FOCUS_GAINED: SDL_Log("[input] window focus gained"); break;
+            case SDL_EVENT_WINDOW_FOCUS_LOST: SDL_Log("[input] window focus LOST"); break;
+            case SDL_EVENT_WINDOW_MOUSE_ENTER: SDL_Log("[input] mouse entered window"); break;
+            case SDL_EVENT_WINDOW_MOUSE_LEAVE: SDL_Log("[input] mouse left window"); break;
+            case SDL_EVENT_GAMEPAD_ADDED: SDL_Log("[input] gamepad added"); break;
+            case SDL_EVENT_GAMEPAD_REMOVED: SDL_Log("[input] gamepad removed"); break;
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            case SDL_EVENT_GAMEPAD_BUTTON_UP:
+                SDL_Log("[input] gamepad button %s %s",
+                        SDL_GetGamepadStringForButton(static_cast<SDL_GamepadButton>(e.gbutton.button)),
+                        e.gbutton.down ? "down" : "up");
+                break;
+            default: break;
+        }
+    }
+
+    // Port 2 = keyboard joystick OR gamepad.
+    void update_joystick() noexcept {
+        frontend::KeyboardJoystick::State s = keyboard_joystick_.state();
+        if (gamepad_ != nullptr) {
+            const auto button = [this](SDL_GamepadButton b) { return SDL_GetGamepadButton(gamepad_, b); };
+            const int16_t x = SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTX);
+            const int16_t y = SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTY);
+            s.up = s.up || button(SDL_GAMEPAD_BUTTON_DPAD_UP) || y < -kStickThreshold;
+            s.down = s.down || button(SDL_GAMEPAD_BUTTON_DPAD_DOWN) || y > kStickThreshold;
+            s.left = s.left || button(SDL_GAMEPAD_BUTTON_DPAD_LEFT) || x < -kStickThreshold;
+            s.right = s.right || button(SDL_GAMEPAD_BUTTON_DPAD_RIGHT) || x > kStickThreshold;
+            s.fire = s.fire || button(SDL_GAMEPAD_BUTTON_SOUTH);
+        }
+        if (s.up && s.down) s.up = s.down = false;  // a real stick can't report both
+        if (s.left && s.right) s.left = s.right = false;
+        machine_.joystick(s.up, s.down, s.left, s.right, s.fire);
+    }
+
+    void update_title() noexcept {
+        std::string title = "Amiga 500";
+        if (captured_) title += " - F12 releases the mouse";
+        if (keyboard_joystick_on_) title += " - keyboard joystick ON (F12+J)";
+        SDL_SetWindowTitle(window_, title.c_str());
+    }
+
+    // The joystick keys are also Amiga keys: release any the Amiga still
+    // sees as held, and reset the joystick, when switching modes.
+    void toggle_keyboard_joystick() noexcept {
+        keyboard_joystick_on_ = !keyboard_joystick_on_;
+        release_amiga_keys();
+        keyboard_joystick_.release_all();
+        update_joystick();
+        update_title();
+        SDL_Log("Keyboard joystick %s", keyboard_joystick_on_ ? "on: arrows/WASD + Ctrl/Space/Alt" : "off");
     }
 
     // Replaces the disk in DF0 (the old image is freed). Outside the emulation
@@ -208,7 +301,9 @@ private:
     void load_disk(const std::string& path) noexcept {
         try {
             machine_.insert_disk(path);
-            SDL_Log("DF0: %s", path.c_str());
+            SDL_Log(machine_.disk_swap_pending() ? "DF0: ejected; %s goes in 3 s later (as a person swapping disks)"
+                                                 : "DF0: %s",
+                    path.c_str());
         } catch (const std::exception& e) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", e.what());
         }
@@ -219,6 +314,14 @@ private:
         if (key.scancode == SDL_SCANCODE_F12) {  // host key: never sent to the Amiga
             f12_held_ = key.down;
             if (key.down) set_captured(false);
+            return;
+        }
+        if (f12_held_ && key.scancode == SDL_SCANCODE_J) {
+            if (key.down) toggle_keyboard_joystick();
+            return;
+        }
+        if (keyboard_joystick_on_ && keyboard_joystick_.key(key.scancode, key.down)) {
+            update_joystick();
             return;
         }
         if (f12_held_ && key.scancode >= SDL_SCANCODE_F1 && key.scancode <= SDL_SCANCODE_F3) {
@@ -232,7 +335,7 @@ private:
         if (const auto code = frontend::amiga_keycode(key.scancode)) {
             if (keys_down_[*code] == key.down) return;
             keys_down_[*code] = key.down;
-            machine_.key_event(*code, key.down);
+            amiga_key(*code, key.down);
         }
     }
 
@@ -259,26 +362,70 @@ private:
             case SDL_BUTTON_MIDDLE: middle_ = button.down; break;
             default: return;
         }
-        machine_.mouse_buttons(left_, right_, middle_);
+        update_mouse_buttons();
+    }
+
+    // Host mouse and gamepad shoulders share the Amiga mouse buttons.
+    void update_mouse_buttons() noexcept {
+        machine_.mouse_buttons(left_ || pad_left_, right_ || pad_right_, middle_);
+    }
+
+    // An Amiga key held by one more (or one fewer) host input.
+    void amiga_key(uint8_t code, bool down) noexcept {
+        if (down ? key_holds_.press(code) : key_holds_.release(code)) machine_.key_event(code, down);
+    }
+
+    void on_pad_button(SDL_GamepadButton button, bool down) noexcept {
+        const frontend::PadAction action = frontend::pad_action(button);
+        if (action.kind == frontend::PadAction::Kind::None) return;
+        const auto index = static_cast<size_t>(button);
+        if (index >= pad_held_.size() || pad_held_[index] == down) return;
+        pad_held_[index] = down;
+        switch (action.kind) {
+            case frontend::PadAction::Kind::Keys:
+                for (uint8_t i = 0; i < action.key_count; ++i) amiga_key(action.keys[i], down);
+                break;
+            case frontend::PadAction::Kind::LeftMouse: pad_left_ = down; update_mouse_buttons(); break;
+            case frontend::PadAction::Kind::RightMouse: pad_right_ = down; update_mouse_buttons(); break;
+            case frontend::PadAction::Kind::None: break;
+        }
+    }
+
+    void release_pad_buttons() noexcept {
+        for (size_t b = 0; b < pad_held_.size(); ++b) {
+            if (pad_held_[b]) on_pad_button(static_cast<SDL_GamepadButton>(b), false);
+        }
     }
 
     void set_captured(bool captured) noexcept {
         if (captured == captured_) return;
         captured_ = captured;
-        SDL_SetWindowRelativeMouseMode(window_, captured);
-        SDL_SetWindowTitle(window_, captured ? "Amiga 500 (F12 releases the mouse)" : "Amiga 500");
+        if (!SDL_SetWindowRelativeMouseMode(window_, captured)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "mouse capture %s failed: %s", captured ? "on" : "off", SDL_GetError());
+        } else if (log_input_) {
+            SDL_Log("[input] mouse capture %s (relative mode now %d)", captured ? "ON" : "off",
+                    SDL_GetWindowRelativeMouseMode(window_));
+        }
+        update_title();
         if (!captured) {
             left_ = right_ = middle_ = false;
-            machine_.mouse_buttons(false, false, false);
+            update_mouse_buttons();
         }
     }
 
     void release_everything() noexcept {
         set_captured(false);
+        release_amiga_keys();
+        release_pad_buttons();
+        keyboard_joystick_.release_all();
+        update_joystick();
+    }
+
+    void release_amiga_keys() noexcept {
         for (size_t code = 0; code < keys_down_.size(); ++code) {
             if (!keys_down_[code]) continue;
             keys_down_[code] = false;
-            machine_.key_event(static_cast<uint8_t>(code), false);
+            amiga_key(static_cast<uint8_t>(code), false);
         }
     }
 
@@ -287,9 +434,15 @@ private:
     bool captured_ = false;
     bool left_ = false, right_ = false, middle_ = false;
     float remainder_x_ = 0.0f, remainder_y_ = 0.0f;
-    std::array<bool, 128> keys_down_{};
+    std::array<bool, 128> keys_down_{};  // Amiga keys held from the host keyboard
+    frontend::KeyHolds key_holds_;         // all sources: keyboard and gamepad
+    std::array<bool, SDL_GAMEPAD_BUTTON_COUNT> pad_held_{};
+    bool pad_left_ = false, pad_right_ = false;
     SDL_Gamepad* gamepad_ = nullptr;
     bool f12_held_ = false;
+    bool log_input_ = false;
+    bool keyboard_joystick_on_ = false;
+    frontend::KeyboardJoystick keyboard_joystick_;
 };
 
 }  // namespace
@@ -297,10 +450,14 @@ private:
 struct Options {
     const char* rom = nullptr;
     bool headless = false;
-    bool trace = false;
+    bool trace = true;
     uint64_t frames = 0;  // 0 = until the window is closed (headless: 500)
     const char* screenshot = nullptr;
     const char* df0 = nullptr;
+    bool turbo_floppy = false;
+    bool joy_keys = false;
+    bool slow_ram = true;
+    bool log_input = false;
 };
 
 void print_usage(const char* program) {
@@ -308,9 +465,17 @@ void print_usage(const char* program) {
                  "usage: %s [options] [kick.rom]\n"
                  "  --df0 FILE.adf     insert a disk in DF0 (or drop an .adf on the window,\n"
                  "                     or hold F12 + F1/F2/F3 for disk1/2/3.adf next to the program)\n"
+                 "  --turbo-floppy     ~113x faster disk DMA (default: real disk speed, with the\n"
+                 "                     emulation unthrottled while the disk is read). Faster loads,\n"
+                 "                     but some loaders fail with it\n"
+                 "  --joy-keys         start with the keyboard joystick on (toggle: F12+J):\n"
+                 "                     arrows/WASD = port 2 directions, Left Ctrl/Space/Left Alt = fire\n"
                  "  --headless         run without a window, as fast as possible\n"
                  "  --frames N         stop after N frames (headless default: 500)\n"
-                 "  --trace            record instructions; dump the last 100 on halt/hang/exit\n"
+                 "  --no-trace         don't record the last instructions (recorded by default,\n"
+                 "                     dumped on a crash, a hang or headless exit)\n"
+                 "  --log-input        log keyboard/mouse/gamepad/focus events and mouse capture\n"
+                 "  --no-slow-ram      stock 512KB A500 (default: + 512KB trapdoor slow RAM at $C00000)\n"
                  "  --screenshot FILE  save the last frame as a BMP on exit\n",
                  program);
 }
@@ -321,9 +486,21 @@ bool parse_options(int argc, char* argv[], Options& options) {
         if (arg == "--headless") {
             options.headless = true;
         } else if (arg == "--trace") {
-            options.trace = true;
+            options.trace = true;  // the default; kept for compatibility
+        } else if (arg == "--no-trace") {
+            options.trace = false;
+        } else if (arg == "--log-input") {
+            options.log_input = true;
+        } else if (arg == "--no-slow-ram") {
+            options.slow_ram = false;
         } else if (arg == "--frames" && i + 1 < argc) {
             options.frames = std::strtoull(argv[++i], nullptr, 10);
+        } else if (arg == "--joy-keys") {
+            options.joy_keys = true;
+        } else if (arg == "--turbo-floppy") {
+            options.turbo_floppy = true;
+        } else if (arg == "--accurate-floppy") {
+            options.turbo_floppy = false;  // the default; kept for compatibility
         } else if (arg == "--df0" && i + 1 < argc) {
             options.df0 = argv[++i];
         } else if (arg == "--screenshot" && i + 1 < argc) {
@@ -359,6 +536,7 @@ public:
     static constexpr unsigned kLoopFrames = 250;
 
     void check(amiga::Machine& machine) {
+        if (const auto deadlock = machine.take_deadlock()) amiga::dump_deadlock(machine, *deadlock, stderr);
         if (reported_) return;
         if (machine.cpu_halted()) {
             report(machine, "CPU halted");
@@ -409,10 +587,13 @@ int main(int argc, char* argv[]) {
         print_usage(argv[0]);
         return 1;
     }
+    std::fprintf(stderr, "amiga_emu built %s %s\n", __DATE__, __TIME__);
 
     // Allocated once, up front: RAM, ROM and the frame buffer are ~2MB.
     auto machine = std::make_unique<amiga::Machine>();
     machine->set_trace_enabled(options.trace);
+    machine->set_slow_ram(options.slow_ram);
+    machine->set_floppy_turbo(options.turbo_floppy);
     if (options.rom != nullptr) {
         try {
             machine->load_kickstart(options.rom);
@@ -436,7 +617,10 @@ int main(int argc, char* argv[]) {
 
     if (options.headless) return run_headless(*machine, options);
 
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+    // The click that brings the window to the front also captures the mouse
+    // (macOS otherwise swallows it).
+    SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init failed: %s", SDL_GetError());
         return 1;
     }
@@ -473,21 +657,50 @@ int main(int argc, char* argv[]) {
     }
     SDL_SetTextureScaleMode(texture.get(), SDL_SCALEMODE_NEAREST);
 
+    // Sound is optional: without an audio device the emulator runs silent.
+    const SDL_AudioSpec audio_spec{SDL_AUDIO_S16, 2, kAudioRate};
+    SDL_AudioStream* audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, nullptr, nullptr);
+    if (audio != nullptr) {
+        SDL_ResumeAudioStreamDevice(audio);
+    } else {
+        SDL_Log("No audio output: %s", SDL_GetError());
+    }
+
     amiga::timing::FramePacer pacer;
     pacer.reset(SDL_GetTicksNS());
 
     constexpr int kPitch = kFrameWidth * static_cast<int>(sizeof(uint32_t));
 
-    HostInput input(*machine, window.get());
+    uint64_t warp_frames = 0;
+    uint64_t last_present = 0;
+    HostInput input(*machine, window.get(), options.joy_keys);
+    input.set_log_input(options.log_input);
     HangDetector detector;
     while (input.pump() && (options.frames == 0 || machine->frame_count() < options.frames)) {
         machine->run_frame();
         detector.check(*machine);
+        const bool warp = machine->disk_busy();
 
-        SDL_UpdateTexture(texture.get(), nullptr, machine->chipset().frame().data(), kPitch);
-        SDL_RenderClear(renderer.get());
-        SDL_RenderTexture(renderer.get(), texture.get(), nullptr, nullptr);
-        SDL_RenderPresent(renderer.get());
+        // In warp, show at most 50 frames per second of host time.
+        const uint64_t now = SDL_GetTicksNS();
+        if (!warp || now - last_present >= amiga::timing::kFrameDurationNs) {
+            last_present = now;
+            SDL_UpdateTexture(texture.get(), nullptr, machine->chipset().frame().data(), kPitch);
+            SDL_RenderClear(renderer.get());
+            SDL_RenderTexture(renderer.get(), texture.get(), nullptr, nullptr);
+            SDL_RenderPresent(renderer.get());
+        }
+
+        // Warp while loading: unthrottled (and silent) while the disk is being read.
+        if (warp) {
+            ++warp_frames;
+            pacer.reset(SDL_GetTicksNS());
+            continue;
+        }
+        const std::span<const int16_t> samples = machine->audio();
+        if (audio != nullptr && SDL_GetAudioStreamQueued(audio) < kMaxQueuedAudioBytes) {
+            SDL_PutAudioStreamData(audio, samples.data(), static_cast<int>(samples.size_bytes()));
+        }
 
         // Sleep until the absolute deadline of the next 20 ms frame.
         if (const uint64_t wait_ns = pacer.time_until_next_frame(SDL_GetTicksNS()); wait_ns > 0) {
@@ -496,11 +709,14 @@ int main(int argc, char* argv[]) {
         pacer.frame_done(SDL_GetTicksNS());
     }
 
-    SDL_Log("Exiting after %llu frames (%llu CPU cycles, %llu pacer resyncs)",
+    SDL_Log("Exiting after %llu frames (%llu in warp, %llu CPU cycles, %llu pacer resyncs)",
             static_cast<unsigned long long>(machine->frame_count()),
+            static_cast<unsigned long long>(warp_frames),
             static_cast<unsigned long long>(machine->cpu_cycles()),
             static_cast<unsigned long long>(pacer.resync_count()));
     if (options.screenshot != nullptr) save_screenshot(machine->chipset().frame(), options.screenshot);
+    input.close();  // gamepad closed while SDL is still up
+    if (audio != nullptr) SDL_DestroyAudioStream(audio);
 
     texture.reset();
     renderer.reset();

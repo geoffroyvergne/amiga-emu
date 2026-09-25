@@ -15,11 +15,24 @@ uint16_t Chipset::read_custom(uint16_t offset) {
         return static_cast<uint16_t>(value | (blitter_.zero() ? 0x2000u : 0u));
     }
     if (offset == 0x000) return blitter_.last_d();  // BLTDDAT
+    // Strobe registers act on any access: a read of COPJMP1/2 (MOVE.W
+    // $DFF088,Dn, as some games do) restarts the Copper just like a write.
+    if (offset == reg::kCopJmp1 || offset == reg::kCopJmp2) {
+        copper_.write_register(offset, 0);
+        return kOpenBusValue;
+    }
     if (disk_.read_register(offset, value, agnus_.dma_enabled(reg::kDskEn))) return value;
+    if (offset == Denise::kClxDat) return denise_.read_collisions();
     if (agnus_.read_register(offset, value) || paula_.read_register(offset, value) ||
         denise_.read_register(offset, value)) {
         return value;
     }
+    // Every readable register lies below $020; from $020 on they are all
+    // write-only (or strobes). Reading one gets nothing driven onto the data
+    // bus, which floats high: $FFFF on an OCS A500. Games rely on it without
+    // knowing: Barbarian's ORI.W #$8020,$DFF096 (a read-modify-write of
+    // DMACON) writes back $FFFF, and that is what switches DMA master on.
+    if (offset >= kFirstWriteOnlyRegister) return kOpenBusValue;
     warn_unemulated(offset, false);
     return 0;
 }
@@ -38,6 +51,7 @@ void Chipset::write_custom(uint16_t offset, uint16_t value) {
         paula_.request(disk_requests);
         return;
     }
+    if (audio_.write_register(offset, value) || sprites_.write_register(offset, value, agnus_.hpos())) return;
     bool blit_started = false;
     if (blitter_.write_register(offset, value, blit_started)) {
         if (blit_started) start_blit_if_enabled();
@@ -66,6 +80,13 @@ bool Chipset::tick() {
 
     copper_.tick(bus_.chip_ram(), vpos, hpos, agnus_.dma_enabled(reg::kCopEn), *this);
 
+    uint16_t audio_requests = 0;
+    audio_.tick(bus_.chip_ram(), agnus_.dmacon(), audio_requests);
+    if (audio_requests != 0) paula_.request(audio_requests);
+
+    if (hpos == 0) sprites_.begin_line();
+    // Sprite DMA slots come early in the line (from $15), before the display.
+    if (hpos == 0x15) sprites_.dma_line(bus_.chip_ram(), vpos, agnus_.dma_enabled(reg::kSprEn));
     if (hpos == timing::kPalColorClocksPerLine - 1) render_line(vpos);
 
     return agnus_.advance_beam();
@@ -84,7 +105,7 @@ void Chipset::render_line(uint16_t vpos) noexcept {
     if (vpos < kFirstDisplayLine || vpos >= kFirstDisplayLine + Denise::kDisplayLines) return;
     const size_t line = vpos - kFirstDisplayLine;
     const Denise::Row row{frame_.data() + line * Denise::kOutputWidth, Denise::kOutputWidth};
-    denise_.render_line(line_fetch_, agnus_.window(), row);
+    denise_.render_line(line_fetch_, agnus_.window(), sprites_, row);
 }
 
 // Settings OCS can't display as asked: warn once, render what Agnus fetches.

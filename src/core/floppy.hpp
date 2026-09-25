@@ -84,11 +84,18 @@ public:
 
     // One color clock of disk rotation.
     Tick tick() noexcept {
+        if (!motor_ || !disk_) return {};
+        rotation_ += 2;
+        if (rotation_ < kHalfColorClocksPerWord) return {};
+        rotation_ -= kHalfColorClocksPerWord;
+        return next_word();
+    }
+
+    // Turbo: the next word passes the head at once, without waiting for the
+    // disk to turn. Nothing happens with the motor off or no disk.
+    Tick next_word() noexcept {
         Tick result;
         if (!motor_ || !disk_) return result;
-        rotation_ += 2;
-        if (rotation_ < kHalfColorClocksPerWord) return result;
-        rotation_ -= kHalfColorClocksPerWord;
         if (++position_ == AdfImage::kTrackWords) {
             position_ = 0;
             result.index = selected_;

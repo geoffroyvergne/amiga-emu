@@ -11,6 +11,8 @@ void Cia8520::reset() noexcept {
     cra_ = crb_ = 0;
     icr_data_ = icr_mask_ = 0;
     sdr_ = 0;
+    shift_out_ = 0;
+    sdr_pending_ = false;
     tod_ = tod_latch_ = alarm_ = 0;
     tod_latched_ = tod_halted_ = false;
 }
@@ -70,14 +72,26 @@ void Cia8520::write(unsigned reg, uint8_t value) noexcept {
         case kTodLo: write_tod(0, value); break;
         case kTodMid: write_tod(8, value); break;
         case kTodHi: write_tod(16, value); break;
-        case kSdr: sdr_ = value; break;
+        case kSdr:
+            sdr_ = value;
+            if ((cra_ & kCraSpMode) != 0) {
+                if (shift_out_ == 0) shift_out_ = kShiftOutUnderflows;
+                else sdr_pending_ = true;
+            }
+            break;
         case kIcr: {
             const uint8_t bits = value & 0x1Fu;
             icr_mask_ = (value & kIcrIr) != 0 ? static_cast<uint8_t>(icr_mask_ | bits)
                                               : static_cast<uint8_t>(icr_mask_ & ~bits);
             break;
         }
-        case kCra: write_control(timer_a_, cra_, value); break;
+        case kCra:
+            if (((cra_ ^ value) & kCraSpMode) != 0) {  // direction change aborts a transfer
+                shift_out_ = 0;
+                sdr_pending_ = false;
+            }
+            write_control(timer_a_, cra_, value);
+            break;
         case kCrb: write_control(timer_b_, crb_, value); break;
         default: break;
     }
@@ -128,6 +142,14 @@ void Cia8520::tick() noexcept {
         a_underflow = count(timer_a_, cra_);
         if (a_underflow) icr_data_ |= kIcrTa;
     }
+    // Serial output: one bit per two timer A underflows (continuous mode only).
+    if (a_underflow && shift_out_ != 0 && (cra_ & kCrRunMode) == 0 && --shift_out_ == 0) {
+        icr_data_ |= kIcrSp;
+        if (sdr_pending_) {
+            sdr_pending_ = false;
+            shift_out_ = kShiftOutUnderflows;
+        }
+    }
     const unsigned b_mode = (crb_ >> kCrbInModeShift) & 3u;
     // 00: E clock. 10: timer A underflows. 11: timer A underflows while CNT
     // is high; CNT idles high on the Amiga, so it behaves like 10.
@@ -153,6 +175,9 @@ bool Cias::read_cia(uint32_t address, uint8_t& value) {
     const unsigned reg = (address >> 8) & 0xFu;
     if ((address & 1u) != 0) {
         if ((address & 0x1000u) != 0) return false;  // CIA-A needs A12 = 0
+        // The pins follow the drive at all times (a disk can be inserted or
+        // removed while software only polls PRA).
+        if (reg == Cia8520::kPra) update_port_a_inputs();
         value = a_.read(reg);
     } else {
         if ((address & 0x2000u) != 0) return false;  // CIA-B needs A13 = 0

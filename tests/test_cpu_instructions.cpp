@@ -141,15 +141,18 @@ void test_movea_immediate_keeps_flags() {
 
 void test_move_odd_word_access_is_address_error() {
     Fixture f{0x3010};  // MOVE.W (A0),D0
+    f.bus->write32(3 * 4, 0x4800);  // address error vector
     f.cpu.set_a(0, 0x3001);
-    try {
-        f.cpu.step();
-        EXPECT(false);
-    } catch (const CpuError& e) {
-        EXPECT(e.kind() == CpuError::Kind::OddDataAccess);
-        EXPECT(e.address() == 0x3001);
-        EXPECT(e.pc() == kProgram);
-    }
+    f.cpu.set_sr(0x2700 | kC);
+    EXPECT(f.cpu.step() == 50);
+    EXPECT(f.cpu.pc() == 0x4800);
+    EXPECT(f.cpu.a(7) == kStack - 14);
+    EXPECT(f.bus->read16(kStack - 14) == 0x1D);       // read, data, supervisor data (FC 5)
+    EXPECT(f.bus->read32(kStack - 12) == 0x3001);     // access address
+    EXPECT(f.bus->read16(kStack - 8) == 0x3010);      // instruction register
+    EXPECT(f.bus->read16(kStack - 6) == (0x2700 | kC));  // SR
+    EXPECT(f.bus->read32(kStack - 4) == kProgram + 2);   // PC
+    EXPECT(f.cpu.d(0) == 0);                          // the access did not happen
 
     Fixture byte{0x1010};  // MOVE.B (A0),D0: bytes may be odd
     byte.cpu.set_a(0, 0x3001);
@@ -320,7 +323,9 @@ void test_branch_to_odd_address() {
     Fixture f{0x60FF};  // BRA.S with displacement -1 (68000: no 32-bit form)
     f.cpu.step();
     EXPECT(f.cpu.pc() == kProgram + 1);
-    EXPECT_THROWS(f.cpu.step(), CpuError);
+    f.bus->write32(3 * 4, 0x4800);
+    f.cpu.step();  // the fetch at the odd address: address error
+    EXPECT(f.cpu.pc() == 0x4800);
 }
 
 // --- Bit manipulation -------------------------------------------------------------

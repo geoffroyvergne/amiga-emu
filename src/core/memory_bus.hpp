@@ -119,6 +119,14 @@ public:
     void set_overlay(bool enabled) noexcept;
     [[nodiscard]] bool overlay() const noexcept { return overlay_; }
 
+    // Trapdoor slow RAM (on by default). Off: a stock 512KB A500, where the
+    // custom chips answer at $C00000-$C7FFFF too.
+    void set_slow_ram(bool enabled) noexcept {
+        slow_ram_enabled_ = enabled;
+        rebuild_banks();
+    }
+    [[nodiscard]] bool slow_ram() const noexcept { return slow_ram_enabled_; }
+
     // Maps the custom chip registers at $DFF000. The port must outlive the bus.
     void attach_custom_chips(CustomChipPort* port) noexcept;
     // Maps the CIAs in the $BF0000 bank. The port must outlive the bus.
@@ -253,6 +261,7 @@ private:
     std::array<Bank, kBankCount> banks_{};
     CustomChipPort* custom_ = nullptr;
     CiaPort* cia_ = nullptr;
+    bool slow_ram_enabled_ = true;
     mutable std::array<bool, kBankCount> open_bus_logged_{};
     bool rom_loaded_ = false;
     bool overlay_ = true;

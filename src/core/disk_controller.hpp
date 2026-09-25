@@ -18,6 +18,10 @@ namespace amiga {
 //                  (a safety measure); a write with DMAEN clear stops it.
 //   DSKSYNC        sync word; with ADKCON WORDSYNC set, a read waits for it
 //                  (the sync word itself is not stored)
+// The data arrives as a bit stream: a 16-bit shift register is compared with
+// DSKSYNC after every bit, so a sync pattern is found at any bit position,
+// not only on word boundaries. With WORDSYNC, a match re-aligns the word
+// boundary to just after the sync (loaders rely on unaligned syncs).
 //   DSKBYTR        byte-ready / DMA-on / write / word-equal status + last byte
 // Interrupts: DSKSYN (level 5) each time the sync word passes, DSKBLK
 // (level 1) when a transfer completes. DMACON DSKEN must be on.
@@ -64,20 +68,40 @@ public:
         }
     }
 
-    // A word read by the selected drive's head. Interrupt bits go to `requests`.
+    // 16 bits read by the selected drive's head, most significant first.
+    // Interrupt bits go to `requests`.
     void disk_word(uint16_t word, ChipRam chip_ram, bool dma_enabled, uint16_t& requests) noexcept {
+        const bool word_sync = (adkcon_ & kAdkWordSync) != 0;
+        for (int bit = 15; bit >= 0; --bit) {
+            shift_ = static_cast<uint16_t>(uint32_t{shift_} << 1 | ((uint32_t{word} >> bit) & 1u));
+            ++bits_;
+            const bool sync = shift_ == sync_;
+            word_equal_ = sync;
+            if (sync) {
+                requests |= reg::kIntDskSyn;
+                if (word_sync && active_ && waiting_for_sync_) {
+                    waiting_for_sync_ = false;  // not stored; words start after it
+                    bits_ = 0;
+                    continue;
+                }
+                if (word_sync) bits_ = 16;  // a sync match is a word boundary
+            }
+            if (bits_ < 16) continue;
+            bits_ = 0;
+            store(shift_, chip_ram, dma_enabled, requests);
+        }
+    }
+
+    [[nodiscard]] bool active() const noexcept { return active_; }
+    [[nodiscard]] uint32_t pointer() const noexcept { return pointer_; }
+    [[nodiscard]] uint16_t adkcon() const noexcept { return adkcon_; }
+
+private:
+    // A complete word: DSKBYTR sees it; DMA stores it once the transfer runs.
+    void store(uint16_t word, ChipRam chip_ram, bool dma_enabled, uint16_t& requests) noexcept {
         last_word_ = word;
         byte_ready_ = true;
-        word_equal_ = word == sync_;
-        if (word_equal_) {
-            requests |= reg::kIntDskSyn;
-            if (active_ && waiting_for_sync_) {
-                waiting_for_sync_ = false;
-                return;  // the sync word itself is not stored
-            }
-        }
         if (!active_ || !dma_enabled || waiting_for_sync_) return;
-
         chip_ram[pointer_] = static_cast<uint8_t>(word >> 8);
         chip_ram[pointer_ + 1] = static_cast<uint8_t>(word);
         pointer_ = (pointer_ + 2) & kAddressMask;
@@ -87,11 +111,6 @@ public:
         }
     }
 
-    [[nodiscard]] bool active() const noexcept { return active_; }
-    [[nodiscard]] uint32_t pointer() const noexcept { return pointer_; }
-    [[nodiscard]] uint16_t adkcon() const noexcept { return adkcon_; }
-
-private:
     void write_dsklen(uint16_t value, uint16_t& requests) noexcept {
         if ((value & kDmaEnBit) == 0) {
             active_ = false;
@@ -122,6 +141,8 @@ private:
     uint16_t adkcon_ = 0;
     uint16_t remaining_ = 0;
     uint16_t last_word_ = 0;
+    uint16_t shift_ = 0;  // incoming bits
+    unsigned bits_ = 0;   // bits since the last word boundary
     bool armed_ = false;
     bool active_ = false;
     bool waiting_for_sync_ = false;

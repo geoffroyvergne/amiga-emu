@@ -11,6 +11,10 @@ int main() {
     run_cia_tests();
     run_cpu_isa_tests();
     run_floppy_tests();
+    run_audio_tests();
+    run_keyboard_joystick_tests();
+    run_gamepad_mapping_tests();
+    run_diagnostics_tests();
     run_kickstart_boot_test();
 
     if (test::g_failures == 0) {
